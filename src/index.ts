@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
@@ -107,6 +107,7 @@ async function main(): Promise<void> {
   });
 
   const server = http.createServer((req, res) => {
+
     if (req.method === "GET" && req.url === "/api/evidence") {
       if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
       try {
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
       } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
       return;
     }
+
     if (req.method === "GET" && req.url === "/api/meters") {
       if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
       try {
@@ -125,12 +127,31 @@ async function main(): Promise<void> {
       } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
       return;
     }
+
     if (req.method === "GET" && req.url === "/dashboard") {
-      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
       const dashPath = path.resolve(process.cwd(), "public", "index.html");
       if (!fs.existsSync(dashPath)) { res.writeHead(404); res.end("Dashboard not found."); return; }
-      res.writeHead(200, { "Content-Type": "text/html" }); res.end(fs.readFileSync(dashPath)); return;
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(fs.readFileSync(dashPath));
+      return;
     }
+
+    if (req.method === "GET" && req.url !== undefined && req.url.startsWith("/api/vault/export-ledger")) {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      void (async () => {
+        try {
+          const parsedUrl = new URL(req.url!, "http://localhost");
+          const clientId = parsedUrl.searchParams.get("client_id") ?? (req.headers["x-client-id"] as string | undefined) ?? "";
+          if (!clientId.trim()) { res.writeHead(422); res.end(JSON.stringify({ error: "client_id is required" })); return; }
+          const ledger = await evidenceDb.exportSignedLedger(clientId.trim());
+          logger.info("caas-lite: ledger exported", { clientId: clientId.trim(), record_count: ledger.payload.record_count, checksum: ledger.checksum });
+          res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+          res.end(JSON.stringify({ ...ledger, meta: { algorithm: "SHA-256", note: "Checksum computed over canonical JSON payload." } }));
+        } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
+      })();
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/api/audit/mini") {
       void (async () => {
         try {
@@ -146,6 +167,7 @@ async function main(): Promise<void> {
       })();
       return;
     }
+
     if (req.method === "POST" && req.url === "/api/agents/payouts") {
       if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
       void (async () => {
@@ -169,39 +191,19 @@ async function main(): Promise<void> {
       })();
       return;
     }
-    // ── GET /api/vault/export-ledger  (protected) — Phase 5.3 ────────────────
-    if (req.method === "GET" && req.url !== undefined && req.url.startsWith("/api/vault/export-ledger")) {
-      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
-      void (async () => {
-        try {
-          const parsedUrl = new URL(req.url!, `http://localhost`);
-          const clientId  = parsedUrl.searchParams.get("client_id")
-            ?? (req.headers["x-client-id"] as string | undefined)
-            ?? "";
-          if (!clientId.trim()) {
-            res.writeHead(422, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "client_id is required as a query param or X-Client-Id header" }));
-            return;
-          }
-          const ledger = await evidenceDb.exportSignedLedger(clientId.trim());
-          logger.info("caas-lite: ledger exported", { clientId: clientId.trim(), record_count: ledger.payload.record_count, checksum: ledger.checksum });
-          res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-          res.end(JSON.stringify({ ...ledger, meta: { algorithm: "SHA-256", note: "Checksum computed over canonical JSON payload." } }));
-        } catch (e) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: (e as Error).message }));
-        }
-      })();
-      return;
-    }
+
     currentClientId = extractClientId(req);
     void webhookReceiver.handleRequest(req, res);
   });
 
   server.listen(PORT, () => {
     logger.info("caas-lite: webhook receiver listening", { port: PORT });
+    logger.info("caas-lite: dashboard     -> http://localhost:" + PORT + "/dashboard");
+    logger.info("caas-lite: evidence      -> http://localhost:" + PORT + "/api/evidence");
+    logger.info("caas-lite: meters        -> http://localhost:" + PORT + "/api/meters");
     logger.info("caas-lite: mini audit    -> http://localhost:" + PORT + "/api/audit/mini");
     logger.info("caas-lite: agent payouts -> http://localhost:" + PORT + "/api/agents/payouts");
+    logger.info("caas-lite: vault export  -> http://localhost:" + PORT + "/api/vault/export-ledger");
   });
 
   const shutdown = () => {
