@@ -19,7 +19,7 @@ export class EvidenceDb {
   private addPayoutStmt: Database.Statement;
   private insertComponentStmt: Database.Statement;
 
-  constructor(filePath: string = "caas_evidence.db") {
+  constructor(filePath: string = process.env["NODE_ENV"] === "production" ? "/data/caas_evidence.db" : "caas_evidence.db") {
     this.db = new Database(filePath);
     this.db.exec(`CREATE TABLE IF NOT EXISTS evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, batchData TEXT NOT NULL)`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS billing_meters (client_id TEXT PRIMARY KEY, verification_runs INTEGER NOT NULL DEFAULT 0, active_monitors INTEGER NOT NULL DEFAULT 1)`);
