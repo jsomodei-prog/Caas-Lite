@@ -1,0 +1,92 @@
+﻿import "dotenv/config";
+import * as http from "http";
+import * as fs   from "fs";
+import * as path from "path";
+import { PolicyEngine }       from "./engine/policy";
+import { VerificationEngine } from "./engine/verification";
+import { WebhookReceiver }    from "./webhook/receiver";
+import { EvidenceDb }         from "./evidenceDb";
+import { logger }             from "./lib/logger";
+const PORT              = parseInt(process.env["PORT"] ?? "3000", 10);
+const HEADER_API_KEY    = process.env["HEADER_API_KEY"]    ?? "";
+const ALERT_FORWARD_URL = process.env["ALERT_FORWARD_URL"] ?? "";
+const DEFAULT_CLIENT_ID = "default_client";
+function isAuthorized(req: http.IncomingMessage): boolean {
+  if (!HEADER_API_KEY) { logger.warn("caas-lite: HEADER_API_KEY not set"); return true; }
+  return req.headers["x-api-key"] === HEADER_API_KEY;
+}
+function rejectUnauthorized(res: http.ServerResponse): void {
+  res.writeHead(401, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Unauthorized" }));
+}
+function extractClientId(req: http.IncomingMessage): string {
+  const raw = req.headers["x-client-id"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return (typeof value === "string" && value.trim().length > 0) ? value.trim() : DEFAULT_CLIENT_ID;
+}
+async function forwardAlert(batch: unknown): Promise<void> {
+  if (!ALERT_FORWARD_URL) return;
+  try {
+    const { default: https } = await import("https");
+    const { default: http }  = await import("http");
+    const payload = Buffer.from(JSON.stringify({ source: "caas-lite", timestamp: new Date().toISOString(), batch }));
+    const url = new URL(ALERT_FORWARD_URL);
+    const client = url.protocol === "https:" ? https : http;
+    await new Promise<void>((resolve, reject) => {
+      const req = client.request({ hostname: url.hostname, port: url.port || (url.protocol === "https:" ? 443 : 80), path: url.pathname + url.search, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": payload.length, "X-Source": "caas-lite" } }, (res) => { res.resume(); logger.info("caas-lite: alert forwarded", { status: res.statusCode }); resolve(); });
+      req.on("error", reject); req.write(payload); req.end();
+    });
+  } catch (e) { logger.error("caas-lite: alert forward failed", { error: (e as Error).message }); }
+}
+async function main(): Promise<void> {
+  logger.info("caas-lite: starting up");
+  const evidenceDb = new EvidenceDb();
+  const policyEngine = await PolicyEngine.create();
+  logger.info("caas-lite: policy engine ready", { policies: policyEngine.size });
+  policyEngine.watch();
+  const verificationEngine = new VerificationEngine(policyEngine);
+  let currentClientId: string = DEFAULT_CLIENT_ID;
+  const webhookReceiver = new WebhookReceiver({
+    verificationEngine,
+    onVerified: async (batch) => {
+      const clientId = currentClientId;
+      await evidenceDb.incrementMeter(clientId, "runs");
+      logger.info("caas-lite: meter incremented", { clientId, eventId: batch.event.id });
+      await evidenceDb.append(batch);
+      if (batch.overallOutcome === "fail" && batch.alerts.length > 0) {
+        for (const alert of batch.alerts) { logger.warn([ALERT] Policy Violation Detected for Batch +batch.event.id, { policyId: alert.policyId, controlId: alert.controlId, severity: alert.severity, message: alert.message }); }
+        void forwardAlert(batch);
+      }
+      logger.info("caas-lite: batch appended to evidence vault", { eventId: batch.event.id, outcome: batch.overallOutcome, alerts: batch.alerts.length });
+    },
+  });
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/api/evidence") {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      try { const rows = evidenceDb.getHistory(50); const parsed = rows.map((r) => ({ id: r.id, timestamp: r.timestamp, batch: JSON.parse(r.batchData) })); res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(parsed)); } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/meters") {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      try { res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(evidenceDb.getAllMeters())); } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
+      return;
+    }
+    if (req.method === "GET" && req.url === "/dashboard") {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      const dashPath = path.resolve(process.cwd(), "public", "index.html");
+      if (!fs.existsSync(dashPath)) { res.writeHead(404); res.end("Dashboard not found."); return; }
+      res.writeHead(200, { "Content-Type": "text/html" }); res.end(fs.readFileSync(dashPath)); return;
+    }
+    currentClientId = extractClientId(req);
+    void webhookReceiver.handleRequest(req, res);
+  });
+  server.listen(PORT, () => {
+    logger.info("caas-lite: webhook receiver listening", { port: PORT });
+    logger.info(caas-lite: dashboard  -> http://localhost:+PORT+/dashboard);
+    logger.info(caas-lite: evidence   -> http://localhost:+PORT+/api/evidence);
+    logger.info(caas-lite: meters     -> http://localhost:+PORT+/api/meters);
+  });
+  const shutdown = () => { logger.info("caas-lite: shutting down"); policyEngine.stopWatch(); server.close(() => { evidenceDb.close(); process.exit(0); }); };
+  process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
+}
+main().catch((e: unknown) => { logger.error("caas-lite: fatal startup error", { error: (e as Error).message }); process.exit(1); });
