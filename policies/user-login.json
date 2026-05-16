@@ -1,0 +1,61 @@
+[
+  {
+    "id": "user-login-mfa-required",
+    "name": "User Login: MFA Required",
+    "framework": "SOC2",
+    "controlId": "CC6.1",
+    "description": "Every human login event must include multi-factor authentication. Logins without MFA flagged as a high-severity compliance violation.",
+    "version": "1.0.0",
+    "enabled": true,
+    "failureSeverity": "high",
+    "appliesTo": ["user.login"],
+    "environments": ["production", "staging"],
+    "conditions": [
+      {
+        "field": "metadata.mfa",
+        "operator": "eq",
+        "value": true
+      }
+    ]
+  },
+  {
+    "id": "user-login-known-source",
+    "name": "User Login: Source Must Be Declared",
+    "framework": "SOC2",
+    "controlId": "CC6.2",
+    "description": "Login events must originate from a declared source system. Missing or empty source is a medium-severity finding.",
+    "version": "1.0.0",
+    "enabled": true,
+    "failureSeverity": "medium",
+    "appliesTo": ["user.login"],
+    "environments": [],
+    "conditions": [
+      {
+        "field": "source",
+        "operator": "exists"
+      }
+    ]
+  },
+  {
+    "id": "user-login-actor-identified",
+    "name": "User Login: Actor Must Be Identified",
+    "framework": "SOC2",
+    "controlId": "CC6.3",
+    "description": "Login events must have a non-empty actor ID and name for auditability.",
+    "version": "1.0.0",
+    "enabled": true,
+    "failureSeverity": "high",
+    "appliesTo": ["user.login"],
+    "environments": [],
+    "conditions": [
+      {
+        "field": "actor.id",
+        "operator": "exists"
+      },
+      {
+        "field": "actor.name",
+        "operator": "exists"
+      }
+    ]
+  }
+]

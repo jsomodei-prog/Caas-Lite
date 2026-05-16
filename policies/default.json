@@ -1,0 +1,184 @@
+[
+  {
+    "id": "soc2-cc6.1-mfa-enrollment",
+    "name": "MFA Enrollment Required",
+    "framework": "SOC2",
+    "controlId": "CC6.1",
+    "description": "Logical access controls require MFA to be enrolled for all human actors. An access.mfa_enrolled event must originate from a human actor.",
+    "appliesTo": ["access.mfa_enrolled"],
+    "conditions": [
+      {
+        "field": "actor.kind",
+        "operator": "eq",
+        "value": "human"
+      }
+    ],
+    "failureSeverity": "high",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "soc2-cc6.1-mfa-disabled-alert",
+    "name": "MFA Must Not Be Disabled",
+    "framework": "SOC2",
+    "controlId": "CC6.1",
+    "description": "Disabling MFA for any human actor is a direct control failure.",
+    "appliesTo": ["access.mfa_disabled"],
+    "conditions": [
+      {
+        "field": "actor.kind",
+        "operator": "neq",
+        "value": "human"
+      }
+    ],
+    "failureSeverity": "critical",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "soc2-cc7.2-deploy-approval",
+    "name": "Production Deploy Requires Approval",
+    "framework": "SOC2",
+    "controlId": "CC7.2",
+    "description": "All production deployments must carry an 'approved' flag in metadata, indicating a change-control approval was recorded.",
+    "appliesTo": ["deploy.completed"],
+    "environments": ["production"],
+    "conditions": [
+      {
+        "field": "metadata.approved",
+        "operator": "eq",
+        "value": true
+      },
+      {
+        "field": "metadata.approver",
+        "operator": "exists"
+      }
+    ],
+    "failureSeverity": "critical",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "soc2-cc7.2-deploy-rollback-logged",
+    "name": "Rollback Must Reference Incident",
+    "framework": "SOC2",
+    "controlId": "CC7.2",
+    "description": "Any rollback event must carry an incidentId in metadata to link it to the incident management record.",
+    "appliesTo": ["deploy.rollback"],
+    "conditions": [
+      {
+        "field": "metadata.incidentId",
+        "operator": "exists"
+      }
+    ],
+    "failureSeverity": "high",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "soc2-cc6.2-secret-rotation",
+    "name": "Secrets Must Be Rotated By Service Accounts Only",
+    "framework": "SOC2",
+    "controlId": "CC6.2",
+    "description": "Secret rotation must be performed by a service account (automated), not a human, to prevent manual credential exposure.",
+    "appliesTo": ["secret.rotated"],
+    "conditions": [
+      {
+        "field": "actor.kind",
+        "operator": "eq",
+        "value": "service"
+      }
+    ],
+    "failureSeverity": "high",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "soc2-cc6.2-secret-exposure",
+    "name": "Secret Exposure Is Always A Failure",
+    "framework": "SOC2",
+    "controlId": "CC6.2",
+    "description": "Any secret.exposed event unconditionally constitutes a control failure and must be alerted immediately.",
+    "appliesTo": ["secret.exposed"],
+    "conditions": [],
+    "failureSeverity": "critical",
+    "version": "1.0.0",
+    "enabled": false,
+    "_note": "Disabled because an empty conditions array would always PASS. See verification.ts forceFailOnEmptyConditions override."
+  },
+  {
+    "id": "soc2-cc4.1-audit-log-integrity",
+    "name": "Audit Logs Must Not Be Tampered",
+    "framework": "SOC2",
+    "controlId": "CC4.1",
+    "description": "An audit.log_tampered event is an unconditional control failure.",
+    "appliesTo": ["audit.log_tampered"],
+    "conditions": [],
+    "failureSeverity": "critical",
+    "version": "1.0.0",
+    "enabled": false,
+    "_note": "Same as secret.exposed — handled via forceFailEventTypes in verification engine."
+  },
+  {
+    "id": "soc2-cc9.2-vendor-soc2",
+    "name": "Vendor SOC 2 Report Must Be Current",
+    "framework": "SOC2",
+    "controlId": "CC9.2",
+    "description": "Uploaded vendor SOC 2 reports must cover a period ending within the last 12 months. The metadata field 'reportPeriodEndYear' is checked against the current year.",
+    "appliesTo": ["vendor.soc2_report_uploaded"],
+    "conditions": [
+      {
+        "field": "metadata.reportType",
+        "operator": "eq",
+        "value": "SOC2"
+      },
+      {
+        "field": "metadata.auditorFirm",
+        "operator": "exists"
+      }
+    ],
+    "failureSeverity": "medium",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "iso27001-a12.6-vuln-scan",
+    "name": "Critical Vulnerabilities Must Be Acknowledged",
+    "framework": "ISO27001",
+    "controlId": "A.12.6.1",
+    "description": "When a vulnerability scan finds critical severity issues, the metadata must include a remediationTicket reference.",
+    "appliesTo": ["vuln.critical_found"],
+    "conditions": [
+      {
+        "field": "metadata.remediationTicket",
+        "operator": "exists"
+      }
+    ],
+    "failureSeverity": "critical",
+    "version": "1.0.0",
+    "enabled": true
+  },
+  {
+    "id": "iso27001-a12.1-infra-drift",
+    "name": "Infrastructure Drift Must Reference Change Request",
+    "framework": "ISO27001",
+    "controlId": "A.12.1.2",
+    "description": "Detected infrastructure drift must be linked to an approved change request via metadata.changeRequestId.",
+    "appliesTo": ["infra.drift_detected"],
+    "environments": ["production"],
+    "conditions": [
+      {
+        "field": "metadata.changeRequestId",
+        "operator": "exists"
+      },
+      {
+        "field": "metadata.approved",
+        "operator": "eq",
+        "value": true
+      }
+    ],
+    "failureSeverity": "high",
+    "version": "1.0.0",
+    "enabled": true
+  }
+]

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CaaS Lite — Compliance Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0a0c10;
+    --surface:   #111318;
+    --border:    #1e2230;
+    --accent:    #00e5ff;
+    --fail:      #ff3b5c;
+    --pass:      #00e5a0;
+    --warn:      #ffc844;
+    --muted:     #4a5268;
+    --text:      #cdd6f4;
+    --heading:   #ffffff;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  /* ── noise grain overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    opacity: 0.4;
+  }
+
+  .shell { position: relative; z-index: 1; display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* ── header ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, #0d1117 0%, #0a0c10 100%);
+  }
+
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-size: 18px; font-weight: 800; letter-spacing: 0.08em;
+    color: var(--heading);
+  }
+  .logo span { color: var(--accent); }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 14px;
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    font-size: 11px; letter-spacing: 0.06em; color: var(--muted);
+  }
+  .status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.4s;
+  }
+  .status-pill.live .dot { background: var(--pass); box-shadow: 0 0 6px var(--pass); }
+  .status-pill.live { color: var(--pass); border-color: var(--pass); }
+
+  /* ── stats bar ── */
+  .stats-bar {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--border);
+  }
+  .stat {
+    padding: 18px 32px;
+    border-right: 1px solid var(--border);
+  }
+  .stat:last-child { border-right: none; }
+  .stat-label { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+  .stat-value { font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 700; color: var(--heading); }
+  .stat-value.fail { color: var(--fail); }
+  .stat-value.pass { color: var(--pass); }
+
+  /* ── main layout ── */
+  main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── event feed ── */
+  .feed { flex: 1; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; gap: 12px; }
+  .feed::-webkit-scrollbar { width: 4px; }
+  .feed::-webkit-scrollbar-track { background: transparent; }
+  .feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .feed-header {
+    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  }
+
+  /* ── event card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    animation: slideIn 0.3s ease;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .card.fail  { border-left: 3px solid var(--fail); }
+  .card.pass  { border-left: 3px solid var(--pass); }
+  .card.inconclusive { border-left: 3px solid var(--warn); }
+
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .card-head:hover { background: rgba(255,255,255,0.02); }
+
+  .card-left { display: flex; align-items: center; gap: 12px; }
+
+  .outcome-badge {
+    font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 3px;
+  }
+  .outcome-badge.fail        { background: rgba(255,59,92,0.15);  color: var(--fail); }
+  .outcome-badge.pass        { background: rgba(0,229,160,0.12);  color: var(--pass); }
+  .outcome-badge.inconclusive{ background: rgba(255,200,68,0.12); color: var(--warn); }
+
+  .event-id { color: var(--accent); font-size: 12px; }
+  .event-type { color: var(--muted); font-size: 11px; }
+
+  .card-right { display: flex; align-items: center; gap: 16px; }
+  .timestamp { color: var(--muted); font-size: 11px; font-style: italic; }
+  .alert-count {
+    font-size: 11px; padding: 2px 8px; border-radius: 3px;
+    background: rgba(255,59,92,0.15); color: var(--fail);
+  }
+  .chevron { color: var(--muted); font-size: 10px; transition: transform 0.2s; }
+  .card.open .chevron { transform: rotate(180deg); }
+
+  /* ── card body (policy results) ── */
+  .card-body { display: none; padding: 0 16px 14px; border-top: 1px solid var(--border); }
+  .card.open .card-body { display: block; }
+
+  .policy-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 12px;
+  }
+  .policy-row:last-child { border-bottom: none; }
+  .policy-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .policy-dot.pass { background: var(--pass); }
+  .policy-dot.fail { background: var(--fail); }
+  .policy-dot.inconclusive { background: var(--warn); }
+  .policy-id { color: var(--accent); flex: 1; }
+  .policy-outcome { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .policy-outcome.pass { color: var(--pass); }
+  .policy-outcome.fail { color: var(--fail); }
+  .policy-outcome.inconclusive { color: var(--warn); }
+  .policy-summary { color: var(--muted); font-size: 11px; font-style: italic; flex: 2; text-align: right; }
+
+  /* ── alert sidebar ── */
+  .sidebar {
+    width: 300px; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-header span { color: var(--fail); font-family: 'Syne', sans-serif; font-size: 14px; }
+  .alert-feed { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .alert-feed::-webkit-scrollbar { width: 3px; }
+  .alert-feed::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .alert-item {
+    background: rgba(255,59,92,0.07);
+    border: 1px solid rgba(255,59,92,0.2);
+    border-radius: 5px;
+    padding: 10px 12px;
+    animation: slideIn 0.3s ease;
+  }
+  .alert-item-id { color: var(--fail); font-size: 11px; margin-bottom: 3px; }
+  .alert-item-policy { color: var(--text); font-size: 12px; margin-bottom: 2px; }
+  .alert-item-time { color: var(--muted); font-size: 10px; font-style: italic; }
+
+  /* ── empty state ── */
+  .empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--muted); gap: 8px; padding: 40px;
+    text-align: center;
+  }
+  .empty-icon { font-size: 32px; opacity: 0.3; }
+  .empty-text { font-size: 12px; }
+
+  /* ── footer ── */
+  footer {
+    padding: 10px 32px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 10px; color: var(--muted); letter-spacing: 0.06em;
+  }
+  .refresh-bar { display: flex; align-items: center; gap: 8px; }
+  .progress { width: 80px; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 1px; transition: width linear; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="logo">CaaS<span>Lite</span> // Compliance Monitor</div>
+    <div class="status-pill" id="statusPill">
+      <div class="dot"></div>
+      <span id="statusText">CONNECTING</span>
+    </div>
+  </header>
+
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-label">Total Events</div>
+      <div class="stat-value" id="statTotal">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Passed</div>
+      <div class="stat-value pass" id="statPass">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Failed</div>
+      <div class="stat-value fail" id="statFail">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Active Alerts</div>
+      <div class="stat-value fail" id="statAlerts">—</div>
+    </div>
+  </div>
+
+  <main>
+    <div class="feed">
+      <div class="feed-header">Event Log — Live Stream</div>
+      <div id="feedContent">
+        <div class="empty">
+          <div class="empty-icon">◎</div>
+          <div class="empty-text">Waiting for events...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="sidebar-header">
+        Active Alerts <span id="alertBadge">0</span>
+      </div>
+      <div class="alert-feed" id="alertFeed">
+        <div class="empty">
+          <div class="empty-icon">✓</div>
+          <div class="empty-text">No violations detected</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div>caas-lite v0.1.0 // phase 3</div>
+    <div class="refresh-bar">
+      <span>Refreshing in <span id="countdown">5</span>s</span>
+      <div class="progress"><div class="progress-fill" id="progressFill" style="width:100%"></div></div>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  const POLL_INTERVAL = 5000;
+  let seenIds = new Set();
+  let allAlerts = [];
+  let countdown = POLL_INTERVAL / 1000;
+  let progressInterval;
+
+  function fmt(iso) {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function setStatus(live) {
+    const pill = document.getElementById('statusPill');
+    const text = document.getElementById('statusText');
+    pill.className = 'status-pill' + (live ? ' live' : '');
+    text.textContent = live ? 'LIVE' : 'OFFLINE';
+  }
+
+  function buildCard(item) {
+    const batch = item.batch;
+    const outcome = batch.overallOutcome;
+    const eventId = batch.event?.id ?? `#${item.id}`;
+    const eventType = batch.event?.type ?? 'unknown';
+    const alertCount = batch.alerts?.length ?? 0;
+    const results = batch.verificationResults ?? [];
+
+    const card = document.createElement('div');
+    card.className = `card ${outcome}`;
+    card.dataset.id = item.id;
+
+    const alertBadgeHtml = alertCount > 0
+      ? `<span class="alert-count">⚠ ${alertCount} alert${alertCount > 1 ? 's' : ''}</span>`
+      : '';
+
+    const resultsHtml = results.map(r => `
+      <div class="policy-row">
+        <div class="policy-dot ${r.outcome}"></div>
+        <div class="policy-id">${r.policyId}</div>
+        <div class="policy-outcome ${r.outcome}">${r.outcome}</div>
+        <div class="policy-summary">${r.summary ?? ''}</div>
+      </div>
+    `).join('');
+
+    card.innerHTML = `
+      <div class="card-head" onclick="this.closest('.card').classList.toggle('open')">
+        <div class="card-left">
+          <div class="outcome-badge ${outcome}">${outcome}</div>
+          <div>
+            <div class="event-id">${eventId}</div>
+            <div class="event-type">${eventType}</div>
+          </div>
+        </div>
+        <div class="card-right">
+          ${alertBadgeHtml}
+          <div class="timestamp">${fmt(item.timestamp)}</div>
+          <div class="chevron">▾</div>
+        </div>
+      </div>
+      <div class="card-body">
+        ${resultsHtml || '<div style="color:var(--muted);padding:8px 0;font-size:11px">No policy results recorded.</div>'}
+      </div>
+    `;
+
+    return card;
+  }
+
+  function updateStats(rows) {
+    const total = rows.length;
+    const passed = rows.filter(r => r.batch.overallOutcome === 'pass').length;
+    const failed = rows.filter(r => r.batch.overallOutcome === 'fail').length;
+    const alerts = rows.reduce((n, r) => n + (r.batch.alerts?.length ?? 0), 0);
+
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statPass').textContent = passed;
+    document.getElementById('statFail').textContent = failed;
+    document.getElementById('statAlerts').textContent = alerts;
+    document.getElementById('alertBadge').textContent = alerts;
+  }
+
+  function updateAlertSidebar(rows) {
+    const alertItems = [];
+    rows.forEach(item => {
+      (item.batch.alerts ?? []).forEach(a => {
+        alertItems.push({ eventId: item.batch.event?.id ?? `#${item.id}`, alert: a, timestamp: item.timestamp });
+      });
+    });
+
+    const feed = document.getElementById('alertFeed');
+    if (alertItems.length === 0) {
+      feed.innerHTML = '<div class="empty"><div class="empty-icon">✓</div><div class="empty-text">No violations detected</div></div>';
+      return;
+    }
+
+    feed.innerHTML = '';
+    alertItems.slice(0, 20).forEach(({ eventId, alert, timestamp }) => {
+      const el = document.createElement('div');
+      el.className = 'alert-item';
+      el.innerHTML = `
+        <div class="alert-item-id">${eventId}</div>
+        <div class="alert-item-policy">${alert.policyId ?? 'unknown policy'}</div>
+        <div class="alert-item-time">${fmt(timestamp)} // ${alert.severity ?? 'unknown'}</div>
+      `;
+      feed.appendChild(el);
+    });
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/evidence');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const rows = await res.json();
+
+      setStatus(true);
+      updateStats(rows);
+      updateAlertSidebar(rows);
+
+      const feed = document.getElementById('feedContent');
+      const newRows = rows.filter(r => !seenIds.has(r.id));
+
+      if (newRows.length > 0 && seenIds.size === 0) {
+        // First load — render all
+        feed.innerHTML = '';
+      }
+
+      newRows.forEach(item => {
+        seenIds.add(item.id);
+        const card = buildCard(item);
+        feed.prepend(card);
+      });
+
+      if (seenIds.size === 0) {
+        feed.innerHTML = '<div class="empty"><div class="empty-icon">◎</div><div class="empty-text">Waiting for events...</div></div>';
+      }
+
+    } catch (e) {
+      setStatus(false);
+    }
+  }
+
+  function startCountdown() {
+    clearInterval(progressInterval);
+    countdown = POLL_INTERVAL / 1000;
+    const fill = document.getElementById('progressFill');
+    const countEl = document.getElementById('countdown');
+
+    progressInterval = setInterval(() => {
+      countdown = Math.max(0, countdown - 0.1);
+      countEl.textContent = Math.ceil(countdown);
+      fill.style.width = ((countdown / (POLL_INTERVAL / 1000)) * 100) + '%';
+    }, 100);
+  }
+
+  async function tick() {
+    startCountdown();
+    await poll();
+    setTimeout(tick, POLL_INTERVAL);
+  }
+
+  tick();
+</script>
+</body>
+</html>
