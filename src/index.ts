@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
@@ -166,6 +166,31 @@ async function main(): Promise<void> {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ status: "payout_recorded", agent_id: agentId, client_id: clientId, subscription_amount: body.subscription_amount, commission_rate: AGENT_COMMISSION_RATE, commission_earned: commission, total_payouts: agent?.total_payouts ?? commission, momo_number: agent?.momo_number ?? null, note: "Balance ready for Paystack/Stripe/MoMo disbursement" }));
         } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: (e as Error).message })); }
+      })();
+      return;
+    }
+    // ── GET /api/vault/export-ledger  (protected) — Phase 5.3 ────────────────
+    if (req.method === "GET" && req.url !== undefined && req.url.startsWith("/api/vault/export-ledger")) {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      void (async () => {
+        try {
+          const parsedUrl = new URL(req.url!, `http://localhost`);
+          const clientId  = parsedUrl.searchParams.get("client_id")
+            ?? (req.headers["x-client-id"] as string | undefined)
+            ?? "";
+          if (!clientId.trim()) {
+            res.writeHead(422, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "client_id is required as a query param or X-Client-Id header" }));
+            return;
+          }
+          const ledger = await evidenceDb.exportSignedLedger(clientId.trim());
+          logger.info("caas-lite: ledger exported", { clientId: clientId.trim(), record_count: ledger.payload.record_count, checksum: ledger.checksum });
+          res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+          res.end(JSON.stringify({ ...ledger, meta: { algorithm: "SHA-256", note: "Checksum computed over canonical JSON payload." } }));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: (e as Error).message }));
+        }
       })();
       return;
     }
