@@ -1,35 +1,42 @@
 import Database from "better-sqlite3";
 
 export interface EvidenceRow {
-  id: number;
+  id:        number;
   timestamp: string;
   batchData: string;
 }
 
 export interface BillingMeterRow {
-  client_id:          string;
-  verification_runs:  number;
-  active_monitors:    number;
+  client_id:         string;
+  verification_runs: number;
+  active_monitors:   number;
 }
 
-/** Valid metering metrics for incrementMeter(). */
+export interface AgentRow {
+  agent_id:      string;
+  total_payouts: number;
+  momo_number:   string | null;
+}
+
+export interface AttributionRow {
+  client_id:  string;
+  agent_id:   string;
+  created_at: string;
+}
+
 export type MeterMetric = "runs" | "monitors";
 
-/** Maps MeterMetric values to their billing_meters column names. */
-const METRIC_COLUMN: Record<MeterMetric, string> = {
-  runs:     "verification_runs",
-  monitors: "active_monitors",
-};
-
 export class EvidenceDb {
-  private db:         Database.Database;
-  private insertStmt: Database.Statement;
-  private upsertStmts: Record<MeterMetric, Database.Statement>;
+  private db: Database.Database;
+  private insertStmt:            Database.Statement;
+  private upsertStmts:           Record<MeterMetric, Database.Statement>;
+  private upsertAgentStmt:       Database.Statement;
+  private upsertAttributionStmt: Database.Statement;
+  private addPayoutStmt:         Database.Statement;
 
   constructor(filePath: string = "caas_evidence.db") {
     this.db = new Database(filePath);
 
-    // ── evidence table ────────────────────────────────────────────────────────
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS evidence (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +45,6 @@ export class EvidenceDb {
       )
     `);
 
-    // ── billing_meters table (Phase 5.1) ──────────────────────────────────────
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS billing_meters (
         client_id         TEXT    PRIMARY KEY,
@@ -47,13 +53,26 @@ export class EvidenceDb {
       )
     `);
 
-    // Prepare evidence insert once — reused on every append()
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agents (
+        agent_id      TEXT PRIMARY KEY,
+        total_payouts REAL NOT NULL DEFAULT 0.0,
+        momo_number   TEXT
+      )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS client_attribution (
+        client_id  TEXT PRIMARY KEY,
+        agent_id   TEXT NOT NULL REFERENCES agents(agent_id),
+        created_at TEXT NOT NULL
+      )
+    `);
+
     this.insertStmt = this.db.prepare(
       `INSERT INTO evidence (timestamp, batchData) VALUES (?, ?)`
     );
 
-    // Prepare one upsert per metric — avoids re-compiling SQL on every call.
-    // INSERT OR IGNORE seeds the row if missing; UPDATE increments atomically.
     this.upsertStmts = {
       runs: this.db.prepare(`
         INSERT INTO billing_meters (client_id, verification_runs, active_monitors)
@@ -68,59 +87,69 @@ export class EvidenceDb {
           SET active_monitors = active_monitors + 1
       `),
     };
+
+    this.upsertAgentStmt = this.db.prepare(`
+      INSERT INTO agents (agent_id, total_payouts, momo_number)
+        VALUES (?, 0.0, ?)
+      ON CONFLICT(agent_id) DO UPDATE
+        SET momo_number = COALESCE(excluded.momo_number, agents.momo_number)
+    `);
+
+    this.upsertAttributionStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO client_attribution (client_id, agent_id, created_at)
+        VALUES (?, ?, ?)
+    `);
+
+    this.addPayoutStmt = this.db.prepare(`
+      UPDATE agents SET total_payouts = total_payouts + ? WHERE agent_id = ?
+    `);
   }
 
-  // ── Evidence vault ──────────────────────────────────────────────────────────
-
   async append(batch: unknown): Promise<void> {
-    const timestamp = new Date().toISOString();
-    const batchData = JSON.stringify(batch);
-    this.insertStmt.run(timestamp, batchData);
+    this.insertStmt.run(new Date().toISOString(), JSON.stringify(batch));
   }
 
   getHistory(limit: number = 50): EvidenceRow[] {
     return this.db
-      .prepare(
-        `SELECT id, timestamp, batchData
-         FROM evidence
-         ORDER BY id DESC
-         LIMIT ?`
-      )
+      .prepare(`SELECT id, timestamp, batchData FROM evidence ORDER BY id DESC LIMIT ?`)
       .all(limit) as EvidenceRow[];
   }
 
-  // ── Billing meters (Phase 5.1) ──────────────────────────────────────────────
-
-  /**
-   * Atomically increments the specified metric for the given client.
-   * Creates the client row with sensible defaults if it doesn't exist yet.
-   *
-   * @param clientId - Caller-supplied client identifier (e.g. from X-Client-Id header)
-   * @param metric   - "runs" increments verification_runs; "monitors" increments active_monitors
-   */
   async incrementMeter(clientId: string, metric: MeterMetric): Promise<void> {
     this.upsertStmts[metric].run(clientId);
   }
 
-  /**
-   * Returns the current meter totals for a given client.
-   * Returns null if the client has no recorded activity yet.
-   */
   getMeter(clientId: string): BillingMeterRow | null {
-    return (
-      this.db
-        .prepare(`SELECT * FROM billing_meters WHERE client_id = ?`)
-        .get(clientId) as BillingMeterRow | undefined
-    ) ?? null;
+    return (this.db.prepare(`SELECT * FROM billing_meters WHERE client_id = ?`).get(clientId) as BillingMeterRow | undefined) ?? null;
   }
 
-  /**
-   * Returns meter totals for all clients — useful for a billing dashboard.
-   */
   getAllMeters(): BillingMeterRow[] {
-    return this.db
-      .prepare(`SELECT * FROM billing_meters ORDER BY verification_runs DESC`)
-      .all() as BillingMeterRow[];
+    return this.db.prepare(`SELECT * FROM billing_meters ORDER BY verification_runs DESC`).all() as BillingMeterRow[];
+  }
+
+  upsertAgent(agentId: string, momoNumber?: string): void {
+    this.upsertAgentStmt.run(agentId, momoNumber ?? null);
+  }
+
+  attributeClient(clientId: string, agentId: string): void {
+    this.upsertAttributionStmt.run(clientId, agentId, new Date().toISOString());
+  }
+
+  getAttribution(clientId: string): string | null {
+    const row = this.db.prepare(`SELECT agent_id FROM client_attribution WHERE client_id = ?`).get(clientId) as { agent_id: string } | undefined;
+    return row?.agent_id ?? null;
+  }
+
+  addPayout(agentId: string, amount: number): boolean {
+    return this.addPayoutStmt.run(amount, agentId).changes > 0;
+  }
+
+  getAgent(agentId: string): AgentRow | null {
+    return (this.db.prepare(`SELECT * FROM agents WHERE agent_id = ?`).get(agentId) as AgentRow | undefined) ?? null;
+  }
+
+  getAllAgents(): AgentRow[] {
+    return this.db.prepare(`SELECT * FROM agents ORDER BY total_payouts DESC`).all() as AgentRow[];
   }
 
   close(): void {
