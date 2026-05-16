@@ -1,26 +1,34 @@
 /**
- * index.ts — CaaS Lite platform entry point (Phase 4)
+ * index.ts — CaaS Lite platform entry point (Phase 5.1)
  *
- * New in Phase 4:
+ * New in Phase 5.1:
+ *   - Metering: extracts X-Client-Id from webhook requests
+ *   - Calls evidenceDb.incrementMeter(clientId, 'runs') after every
+ *     successful verification so every run is accurately billed
+ *
+ * Carried forward from Phase 4:
  *   - API key authentication on /api/evidence and /dashboard
  *   - Alert forwarding via HTTP POST to ALERT_FORWARD_URL
- *   - Policy hot-reload (delegated to PolicyEngine.watch())
+ *   - Policy hot-reload via PolicyEngine.watch()
  */
 
 import "dotenv/config";
 
 import * as http from "http";
-import * as fs from "fs";
+import * as fs   from "fs";
 import * as path from "path";
-import { PolicyEngine } from "./engine/policy";
+import { PolicyEngine }      from "./engine/policy";
 import { VerificationEngine } from "./engine/verification";
-import { WebhookReceiver } from "./webhook/receiver";
-import { EvidenceDb } from "./evidenceDb";
-import { logger } from "./lib/logger";
+import { WebhookReceiver }   from "./webhook/receiver";
+import { EvidenceDb }        from "./evidenceDb";
+import { logger }            from "./lib/logger";
 
-const PORT             = parseInt(process.env["PORT"] ?? "3000", 10);
-const HEADER_API_KEY   = process.env["HEADER_API_KEY"] ?? "";
+const PORT              = parseInt(process.env["PORT"] ?? "3000", 10);
+const HEADER_API_KEY    = process.env["HEADER_API_KEY"]    ?? "";
 const ALERT_FORWARD_URL = process.env["ALERT_FORWARD_URL"] ?? "";
+
+/** Fallback client ID used when the caller omits X-Client-Id. */
+const DEFAULT_CLIENT_ID = "default_client";
 
 // ---------------------------------------------------------------------------
 // Auth helper
@@ -29,7 +37,7 @@ const ALERT_FORWARD_URL = process.env["ALERT_FORWARD_URL"] ?? "";
 function isAuthorized(req: http.IncomingMessage): boolean {
   if (!HEADER_API_KEY) {
     logger.warn("caas-lite: HEADER_API_KEY not set — protected endpoints are open");
-    return true; // fail-open during local dev if key not configured
+    return true;
   }
   const provided = req.headers["x-api-key"];
   return provided === HEADER_API_KEY;
@@ -41,7 +49,24 @@ function rejectUnauthorized(res: http.ServerResponse): void {
 }
 
 // ---------------------------------------------------------------------------
-// Alert forwarder
+// Client ID extraction (Phase 5.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the billing client ID from the request.
+ * Reads X-Client-Id header; falls back to DEFAULT_CLIENT_ID if absent.
+ * Always returns a non-empty string — safe to pass directly to incrementMeter().
+ */
+function extractClientId(req: http.IncomingMessage): string {
+  const raw = req.headers["x-client-id"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return (typeof value === "string" && value.trim().length > 0)
+    ? value.trim()
+    : DEFAULT_CLIENT_ID;
+}
+
+// ---------------------------------------------------------------------------
+// Alert forwarder (Phase 4)
 // ---------------------------------------------------------------------------
 
 async function forwardAlert(batch: unknown): Promise<void> {
@@ -74,7 +99,7 @@ async function forwardAlert(batch: unknown): Promise<void> {
           },
         },
         (res) => {
-          res.resume(); // drain
+          res.resume();
           logger.info("caas-lite: alert forwarded", {
             url:    ALERT_FORWARD_URL,
             status: res.statusCode,
@@ -103,42 +128,12 @@ async function main(): Promise<void> {
   const policyEngine = await PolicyEngine.create();
   logger.info("caas-lite: policy engine ready", { policies: policyEngine.size });
 
-  // Phase 4: hot-reload watcher
   policyEngine.watch();
 
   const verificationEngine = new VerificationEngine(policyEngine);
 
-  const webhookReceiver = new WebhookReceiver({
-    verificationEngine,
-    onVerified: async (batch) => {
-      await evidenceDb.append(batch);
-
-      if (batch.overallOutcome === "fail" && batch.alerts.length > 0) {
-        for (const alert of batch.alerts) {
-          logger.warn(
-            `[ALERT] Policy Violation Detected for Batch ${batch.event.id}`,
-            {
-              policyId:  alert.policyId,
-              controlId: alert.controlId,
-              severity:  alert.severity,
-              message:   alert.message,
-            }
-          );
-        }
-        // Phase 4: forward to external alert endpoint
-        void forwardAlert(batch);
-      }
-
-      logger.info("caas-lite: batch appended to evidence vault", {
-        eventId: batch.event.id,
-        outcome: batch.overallOutcome,
-        alerts:  batch.alerts.length,
-      });
-    },
-  });
-
   // ---------------------------------------------------------------------------
-  // HTTP server
+  // HTTP server — webhook ingestion, API, dashboard
   // ---------------------------------------------------------------------------
 
   const server = http.createServer((req, res) => {
@@ -165,6 +160,23 @@ async function main(): Promise<void> {
       return;
     }
 
+    // ── GET /api/meters  (protected) — Phase 5.1 billing dashboard ────────────
+    if (req.method === "GET" && req.url === "/api/meters") {
+      if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
+      try {
+        const meters = evidenceDb.getAllMeters();
+        res.writeHead(200, {
+          "Content-Type":                "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify(meters));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: (e as Error).message }));
+      }
+      return;
+    }
+
     // ── GET /dashboard  (protected) ───────────────────────────────────────────
     if (req.method === "GET" && req.url === "/dashboard") {
       if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
@@ -179,14 +191,65 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ── Delegate everything else to WebhookReceiver ───────────────────────────
+    // ── POST /webhook — metered ingestion (Phase 5.1) ─────────────────────────
+    // Extract client ID before delegating so we can meter the run after
+    // verification completes inside onVerified.
+    // We attach it to the request object via a lightweight cast so the
+    // onVerified callback can read it without coupling receiver.ts to billing.
+    (req as http.IncomingMessage & { _clientId?: string })._clientId =
+      extractClientId(req);
+
     void webhookReceiver.handleRequest(req, res);
+  });
+
+  // Build receiver after the server so onVerified can close over evidenceDb
+  const webhookReceiver = new WebhookReceiver({
+    verificationEngine,
+    onVerified: async (batch, req) => {
+      // ── Phase 5.1: meter the run ────────────────────────────────────────────
+      const clientId =
+        (req as http.IncomingMessage & { _clientId?: string } | undefined)
+          ?._clientId ?? DEFAULT_CLIENT_ID;
+
+      await evidenceDb.incrementMeter(clientId, "runs");
+
+      logger.info("caas-lite: meter incremented", {
+        clientId,
+        eventId: batch.event.id,
+      });
+
+      // ── Phase 2: persist to evidence vault ──────────────────────────────────
+      await evidenceDb.append(batch);
+
+      // ── Phase 4: alert forwarding ───────────────────────────────────────────
+      if (batch.overallOutcome === "fail" && batch.alerts.length > 0) {
+        for (const alert of batch.alerts) {
+          logger.warn(
+            `[ALERT] Policy Violation Detected for Batch ${batch.event.id}`,
+            {
+              policyId:  alert.policyId,
+              controlId: alert.controlId,
+              severity:  alert.severity,
+              message:   alert.message,
+            }
+          );
+        }
+        void forwardAlert(batch);
+      }
+
+      logger.info("caas-lite: batch appended to evidence vault", {
+        eventId: batch.event.id,
+        outcome: batch.overallOutcome,
+        alerts:  batch.alerts.length,
+      });
+    },
   });
 
   server.listen(PORT, () => {
     logger.info("caas-lite: webhook receiver listening", { port: PORT });
     logger.info(`caas-lite: dashboard  → http://localhost:${PORT}/dashboard`);
     logger.info(`caas-lite: evidence   → http://localhost:${PORT}/api/evidence`);
+    logger.info(`caas-lite: meters     → http://localhost:${PORT}/api/meters`);
   });
 
   const shutdown = () => {
