@@ -1,0 +1,8 @@
+﻿node_modules/
+dist/
+caas_evidence.db
+.env
+*.db
+src-1.zip
+query-evidence.js
+policies/query-evidence.ts
