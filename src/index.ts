@@ -62,7 +62,7 @@ function runMiniAudit(req: MiniAuditRequest): MiniAuditReport {
   if (!p["vendor_risk_assessments"]) gaps.push({ control: "CC9.1", description: "Vendor risk assessments not conducted.", severity: "medium" });
   if (!p["incident_response_plan"]) gaps.push({ control: "CC2.1", description: "No incident response plan.", severity: "critical" });
   const deductions = gaps.reduce((sum, g) => sum + (g.severity === "critical" ? 20 : g.severity === "high" ? 12 : 7), 0);
-  return { prospect_id: req.prospect_id, agent_id: req.agent_id, readiness_score: Math.max(0, 100 - deductions), gaps, summary: gaps.length === 0 ? "No critical gaps." : gaps.length + " gap(s) identified.", generated_at: new Date().toISOString() };
+  return { prospect_id: req.prospect_id, agent_id: req.agent_id, readiness_score: Math.max(0, 100 - deductions), gaps, summary: gaps.length === 0 ? "No critical gaps detected." : gaps.length + " gap(s) identified. " + gaps.filter(g => g.severity === "critical").length + " critical control(s) require immediate remediation.", generated_at: new Date().toISOString() };
 }
 
 interface AssessmentRequest { business_sector: string; ai_usage_type: string; processes_personal_data: boolean; agent_id?: string; }
@@ -89,6 +89,25 @@ function runSmbAssessment(req: AssessmentRequest): AssessmentReport {
   return { business_sector: req.business_sector, ai_usage_type: req.ai_usage_type, processes_personal_data: req.processes_personal_data, risk_score, risk_tier, gaps, prompt_templates, summary: "Risk tier: " + risk_tier + " (score: " + risk_score + "/100). " + gaps.length + " gap(s) identified.", generated_at: new Date().toISOString() };
 }
 
+function generateBadgeSvg(verified: boolean): string {
+  const label = "CaaS Status";
+  const status = verified ? "Verified Compliant" : "In Shadow Scan";
+  const bgColor = verified ? "#10b981" : "#f59e0b";
+  const labelW = 82; const statusW = verified ? 118 : 108; const totalW = labelW + statusW;
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="20" role="img" aria-label="${label}: ${status}">`,
+    `<title>${label}: ${status}</title>`,
+    `<defs><clipPath id="r"><rect width="${totalW}" height="20" rx="3" fill="#fff"/></clipPath></defs>`,
+    `<g clip-path="url(#r)"><rect width="${labelW}" height="20" fill="#555"/><rect x="${labelW}" width="${statusW}" height="20" fill="${bgColor}"/></g>`,
+    `<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">`,
+    `<text x="${labelW / 2}" y="14" fill="#010101" fill-opacity=".3">${label}</text>`,
+    `<text x="${labelW / 2}" y="13">${label}</text>`,
+    `<text x="${labelW + statusW / 2}" y="14" fill="#010101" fill-opacity=".3">${status}</text>`,
+    `<text x="${labelW + statusW / 2}" y="13">${status}</text>`,
+    `</g></svg>`,
+  ].join("");
+}
+
 async function main(): Promise<void> {
   logger.info("caas-lite: starting up");
   const evidenceDb = new EvidenceDb();
@@ -97,20 +116,28 @@ async function main(): Promise<void> {
   policyEngine.watch();
   const verificationEngine = new VerificationEngine(policyEngine);
   let currentClientId: string = DEFAULT_CLIENT_ID;
+
   const webhookReceiver = new WebhookReceiver({
     verificationEngine,
     onVerified: async (batch) => {
       const clientId = currentClientId;
+      const batchAny = batch as unknown as Record<string, unknown>;
+      const eventMeta = batchAny["event"] as Record<string, unknown> | undefined;
+      const meta = eventMeta?.["metadata"] as Record<string, unknown> | undefined;
+      const isShadowScan = meta?.["mode"] === "shadow_scan" || eventMeta?.["environment"] === "shadow_scan";
       await evidenceDb.incrementMeter(clientId, "runs");
-      logger.info("caas-lite: meter incremented", { clientId, eventId: batch.event.id });
+      logger.info("caas-lite: meter incremented", { clientId, eventId: batch.event.id, shadowScan: isShadowScan });
       await evidenceDb.append(batch);
-      if (batch.overallOutcome === "fail" && batch.alerts.length > 0) {
+      if (!isShadowScan && batch.overallOutcome === "fail" && batch.alerts.length > 0) {
         for (const alert of batch.alerts) { logger.warn("[ALERT] Policy Violation for Batch " + batch.event.id, { policyId: alert.policyId, controlId: alert.controlId, severity: alert.severity, message: alert.message }); }
         void forwardAlert(batch);
+      } else if (isShadowScan && batch.overallOutcome === "fail") {
+        logger.info("caas-lite: shadow scan failure recorded (no alert)", { eventId: batch.event.id });
       }
-      logger.info("caas-lite: batch appended", { eventId: batch.event.id, outcome: batch.overallOutcome, alerts: batch.alerts.length });
+      logger.info("caas-lite: batch appended to evidence vault", { eventId: batch.event.id, outcome: batch.overallOutcome, alerts: batch.alerts.length, shadowScan: isShadowScan });
     },
   });
+
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/api/evidence") {
       if (!isAuthorized(req)) { rejectUnauthorized(res); return; }
@@ -137,6 +164,21 @@ async function main(): Promise<void> {
           const ledger = await evidenceDb.exportSignedLedger(clientId.trim());
           res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
           res.end(JSON.stringify({ ...ledger, meta: { algorithm: "SHA-256", note: "Checksum over canonical JSON payload." } }));
+        } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
+      })(); return;
+    }
+    if (req.method === "GET" && req.url !== undefined && req.url.startsWith("/api/v1/badge/")) {
+      void (async () => {
+        try {
+          const clientId = decodeURIComponent(req.url!.replace("/api/v1/badge/", "").split("?")[0].trim());
+          if (!clientId) { res.writeHead(400); res.end(JSON.stringify({ error: "clientId is required" })); return; }
+          const meter = evidenceDb.getMeter(clientId);
+          const history = evidenceDb.getHistory(10);
+          const recentFails = history.filter(row => { try { return (JSON.parse(row.batchData) as Record<string, unknown>)["overallOutcome"] === "fail"; } catch { return false; } });
+          const verified = meter !== null && recentFails.length === 0;
+          logger.info("caas-lite: trust badge served", { clientId, verified, status: verified ? "Verified Compliant" : "In Shadow Scan" });
+          res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache, max-age=0", "Access-Control-Allow-Origin": "*" });
+          res.end(generateBadgeSvg(verified));
         } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
       })(); return;
     }
@@ -182,7 +224,6 @@ async function main(): Promise<void> {
           if (typeof body.processes_personal_data !== "boolean") { res.writeHead(422); res.end(JSON.stringify({ error: "processes_personal_data must be boolean" })); return; }
           if (body.agent_id?.trim()) evidenceDb.upsertAgent(body.agent_id.trim());
           const report = runSmbAssessment({ business_sector: body.business_sector.trim(), ai_usage_type: body.ai_usage_type.trim(), processes_personal_data: body.processes_personal_data, agent_id: body.agent_id?.trim() });
-          logger.info("caas-lite: SMB assessment", { sector: report.business_sector, risk_tier: report.risk_tier });
           res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(report));
         } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: (e as Error).message })); }
       })(); return;
@@ -196,7 +237,6 @@ async function main(): Promise<void> {
           const normalized = { id: (raw["event_id"] as string | undefined) ?? "ipaas-" + Date.now(), type: (raw["event_type"] as string | undefined) ?? "ipaas.event", occurredAt: (raw["occurred_at"] as string | undefined) ?? new Date().toISOString(), receivedAt: new Date().toISOString(), source, actor: { id: (raw["actor_id"] as string | undefined) ?? clientId, name: (raw["actor_name"] as string | undefined) ?? "iPaaS Connector", kind: "service" as const }, metadata: { ...(raw["metadata"] as Record<string, unknown> | undefined ?? {}), ipaas_source: source, client_id: clientId }, environment: (raw["environment"] as string | undefined) ?? "production", overallOutcome: "inconclusive", alerts: [], verificationResults: [] };
           await evidenceDb.append(normalized);
           await evidenceDb.incrementMeter(clientId, "runs");
-          logger.info("caas-lite: iPaaS event ingested", { clientId, source, eventId: normalized.id });
           res.writeHead(202, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ status: "accepted", event_id: normalized.id, client_id: clientId, source }));
         } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: (e as Error).message })); }
@@ -214,7 +254,6 @@ async function main(): Promise<void> {
           const riskTier = body.risk_tier?.trim() || "Medium";
           if (!["Low", "Medium", "High", "Critical"].includes(riskTier)) { res.writeHead(422); res.end(JSON.stringify({ error: "risk_tier must be Low, Medium, High, or Critical" })); return; }
           await evidenceDb.registerComponent({ clientId: body.client_id.trim(), name: body.component_name.trim(), vendor: body.vendor.trim(), version: body.version.trim(), riskTier });
-          logger.info("caas-lite: AI BoM registered", { clientId: body.client_id.trim(), component: body.component_name.trim() });
           res.writeHead(201, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ status: "registered", client_id: body.client_id.trim(), component_name: body.component_name.trim(), vendor: body.vendor.trim(), version: body.version.trim(), risk_tier: riskTier }));
         } catch (e) { res.writeHead(400); res.end(JSON.stringify({ error: (e as Error).message })); }
@@ -236,15 +275,23 @@ async function main(): Promise<void> {
     currentClientId = extractClientId(req);
     void webhookReceiver.handleRequest(req, res);
   });
+
   server.listen(PORT, () => {
     logger.info("caas-lite: webhook receiver listening", { port: PORT });
-    logger.info("caas-lite: dashboard        -> http://localhost:" + PORT + "/dashboard");
-    logger.info("caas-lite: SMB assessment   -> http://localhost:" + PORT + "/api/assessments/submit");
-    logger.info("caas-lite: iPaaS bridge     -> http://localhost:" + PORT + "/api/webhook/ipaas");
-    logger.info("caas-lite: AI BoM register  -> http://localhost:" + PORT + "/api/aibom/register");
-    logger.info("caas-lite: AI BoM inventory -> http://localhost:" + PORT + "/api/aibom");
+    logger.info("caas-lite: trust badge       -> http://localhost:" + PORT + "/api/v1/badge/:clientId");
+    logger.info("caas-lite: dashboard         -> http://localhost:" + PORT + "/dashboard");
   });
-  const shutdown = () => { logger.info("caas-lite: shutting down"); policyEngine.stopWatch(); server.close(() => { evidenceDb.close(); process.exit(0); }); };
-  process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
+
+  const shutdown = () => {
+    logger.info("caas-lite: shutting down");
+    policyEngine.stopWatch();
+    server.close(() => { evidenceDb.close(); process.exit(0); });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
-main().catch((e: unknown) => { logger.error("caas-lite: fatal startup error", { error: (e as Error).message }); process.exit(1); });
+
+main().catch((e: unknown) => {
+  logger.error("caas-lite: fatal startup error", { error: (e as Error).message });
+  process.exit(1);
+});
