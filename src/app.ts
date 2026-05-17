@@ -13,14 +13,14 @@
  *   7.  Global middleware (helmet, CORS, compression, body parsing)
  *   8.  Request timing middleware
  *   9.  Rate limiter middleware
- *   10. API routes (auth, users, payouts, anomalies, fx, compliance, admin, queue)
+ *   10. API routes (auth, users, commercial, payouts, anomalies, fx, compliance, admin, queue)
  *   11. /metrics Prometheus endpoint
  *   12. /health + /dashboard endpoints
  *   13. 404 handler
  *   14. Global error handler
  *   15. Graceful-shutdown hooks
  *
- * Phase 11 build-out | Commit baseline: a4f5db6
+ * Phase 12-13 build-out | Commit baseline: cc20b1a
  */
 
 import "express-async-errors";
@@ -46,9 +46,10 @@ import {
   fxRateGauge,
 } from "./analytics/performance";
 import { createRateLimiter, buildTierOverridesFromEnv } from "./middleware/rateLimiter";
-import { createAuthRouter }  from "./routes/auth";
-import { createUsersRouter } from "./routes/users";
-import { getQueue }          from "./services/queue";
+import { createAuthRouter }       from "./routes/auth";
+import { createUsersRouter }      from "./routes/users";
+import { createCommercialRouter } from "./routes/commercial";
+import { getQueue }               from "./services/queue";
 
 // ─── Environment Validation ───────────────────────────────────────────────────
 
@@ -340,7 +341,7 @@ export function createApp(): AppContext {
     tierOverrides:    buildTierOverridesFromEnv(),
     bypassPaths: [
       "/health", "/health/db", "/health/performance", "/metrics",
-      "/dashboard", "/register", "/api/v1/auth", "/api/v1/users", "/api/v1/admin", "/api/v1/fx",
+      "/dashboard", "/register", "/api/v1/auth", "/api/v1/admin", "/api/v1/fx",
     ],
   }));
 
@@ -352,6 +353,9 @@ export function createApp(): AppContext {
 
   // Users + profiles (Phase 11)
   apiV1.use("/users", createUsersRouter());
+
+  // Commercial pipeline + insurance underwriting (Phase 12-13)
+  apiV1.use("/commercial", createCommercialRouter());
 
   // Payouts
   apiV1.post("/payouts/sweep", async (req, res) => {
@@ -505,9 +509,12 @@ export function createApp(): AppContext {
   // ── Step 12: Health + dashboard ───────────────────────────────────────────
   registerHealthRoutes(app, db, backupManager, startedAt);
 
-  app.get("/register", (_req, res) => { res.sendFile(require("path").resolve("public/register.html")); });
   app.get("/dashboard", (_req, res) => {
     res.sendFile(require("path").resolve("public/index.html"));
+  });
+
+  app.get("/register", (_req, res) => {
+    res.sendFile(require("path").resolve("public/register.html"));
   });
 
   // ── Step 13: 404 ──────────────────────────────────────────────────────────
