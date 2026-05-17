@@ -50,6 +50,11 @@ import { createAuthRouter }       from "./routes/auth";
 import { createUsersRouter }      from "./routes/users";
 import { createCommercialRouter } from "./routes/commercial";
 import { getQueue }               from "./services/queue";
+import {
+  injectPlaneContext,
+  getAccessMetricsHandler,
+  requireBusinessPlane,
+} from "./middleware/dualPlaneAuth";
 
 // ─── Environment Validation ───────────────────────────────────────────────────
 
@@ -332,6 +337,10 @@ export function createApp(): AppContext {
   // ── Step 8: Request timing ────────────────────────────────────────────────
   app.use(createQueryTimingMiddleware());
 
+  // ── Step 8b: Dual-plane context injection ─────────────────────────────────
+  // Resolves and attaches the plane principal to every authenticated request.
+  app.use(injectPlaneContext());
+
   // ── Step 9: Rate limiter ──────────────────────────────────────────────────
   app.use(createRateLimiter({
     tierHeader:       "X-CaaS-Tier",
@@ -416,6 +425,12 @@ export function createApp(): AppContext {
   apiV1.get("/admin/queue", (_req, res) => {
     res.json({ stats: queue.getStats(), dead_letter: queue.getDeadLetterQueue(20) });
   });
+
+  // Admin — access metrics (Phase 12 Roles)
+  apiV1.get("/admin/access-metrics",
+    requireBusinessPlane(["global_super_admin", "platform_auditor"]),
+    (req, res, next) => getAccessMetricsHandler(req, res).catch(next)
+  );
 
   apiV1.post("/admin/queue/enqueue", (req, res) => {
     const { type, payload, priority, idempotencyKey } = req.body as {

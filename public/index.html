@@ -7,25 +7,43 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
+  /* ── Base palette — brightened ─────────────────────────────────────────── */
   :root {
-    --bg:        #080b10;
-    --surface:   #0d1117;
-    --border:    #1c2230;
-    --border-hi: #2d3a50;
-    --text:      #e2e8f0;
-    --muted:     #4a5568;
-    --accent:    #00d4aa;
-    --accent2:   #3b82f6;
-    --accent3:   #f59e0b;
-    --danger:    #ef4444;
-    --success:   #10b981;
-    --warn:      #f59e0b;
-    --critical:  #dc2626;
-    --glow:      0 0 20px rgba(0,212,170,0.15);
+    --bg:        #0a0f1a;
+    --surface:   #111827;
+    --border:    #1f2d42;
+    --border-hi: #2e4060;
+    --text:      #f0f6ff;
+    --muted:     #6b7fa3;
+    --accent:    #00f5c4;
+    --accent2:   #4f9eff;
+    --accent3:   #ffc94d;
+    --danger:    #ff5f5f;
+    --success:   #1de9a0;
+    --warn:      #ffb74d;
+    --critical:  #ff3b3b;
+    --glow:      0 0 28px rgba(0,245,196,0.2);
+
+    /* Business plane theme */
+    --plane-biz-accent:  #a78bfa;
+    --plane-biz-bg:      rgba(167,139,250,0.06);
+    --plane-biz-border:  rgba(167,139,250,0.25);
+    --plane-biz-glow:    0 0 28px rgba(167,139,250,0.15);
+
+    /* Client plane theme */
+    --plane-cli-accent:  #00f5c4;
+    --plane-cli-bg:      rgba(0,245,196,0.05);
+    --plane-cli-border:  rgba(0,245,196,0.2);
+    --plane-cli-glow:    0 0 28px rgba(0,245,196,0.15);
+  }
+
+  /* Business plane overrides applied via .plane-business class on body */
+  body.plane-business {
+    --accent:      var(--plane-biz-accent);
+    --glow:        var(--plane-biz-glow);
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   html { scroll-behavior: smooth; }
 
   body {
@@ -646,6 +664,84 @@
     .stat-grid { grid-template-columns: repeat(2,1fr); }
     .fx-grid   { grid-template-columns: repeat(2,1fr); }
   }
+
+  .wdot {
+    width: 28px; height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    transition: background 0.2s;
+  }
+  .wdot.active { background: var(--accent); }
+  .wdot.done   { background: var(--success); }
+
+  /* ── Plane banner ──────────────────────────────────────────────────────── */
+  .plane-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 32px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .plane-banner.business {
+    background: var(--plane-biz-bg);
+    border-bottom-color: var(--plane-biz-border);
+    color: var(--plane-biz-accent);
+  }
+
+  .plane-banner.client {
+    background: var(--plane-cli-bg);
+    border-bottom-color: var(--plane-cli-border);
+    color: var(--plane-cli-accent);
+  }
+
+  .plane-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .plane-banner.business .plane-dot { background: var(--plane-biz-accent); box-shadow: 0 0 8px var(--plane-biz-accent); }
+  .plane-banner.client   .plane-dot { background: var(--plane-cli-accent); box-shadow: 0 0 8px var(--plane-cli-accent); }
+
+  /* ── Security metrics panel ────────────────────────────────────────────── */
+  .security-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin-bottom: 24px;
+  }
+
+  .security-cell {
+    background: var(--surface);
+    padding: 20px 24px;
+  }
+
+  .security-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .security-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .security-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
 </style>
 </head>
 <body>
@@ -699,6 +795,7 @@
       <button class="nav-btn" onclick="showPage('fx')">FX Rates</button>
       <button class="nav-btn" onclick="showPage('compliance')">Compliance</button>
       <button class="nav-btn" onclick="showPage('users')">Users</button>
+      <button class="nav-btn" id="nav-security" onclick="showPage('security')" style="display:none">Security</button>
       <button class="nav-btn" onclick="showPage('system')">System</button>
     </nav>
 
@@ -712,6 +809,241 @@
         <span class="user-role" id="user-role">—</span>
       </div>
       <button class="btn-logout" onclick="doLogout()">Logout</button>
+    </div>
+  </div>
+
+  <!-- ── Freelancer Onboarding Wizard Modal ─────────────────────────── -->
+  <div id="wizard-overlay" style="display:none;position:fixed;inset:0;background:rgba(8,11,16,0.85);backdrop-filter:blur(4px);z-index:500;align-items:center;justify-content:center">
+    <div style="width:560px;background:var(--surface);border:1px solid var(--border-hi);border-radius:2px;box-shadow:0 0 60px rgba(0,212,170,0.1);position:relative;max-height:90vh;overflow-y:auto">
+
+      <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent)"></div>
+
+      <!-- Wizard header -->
+      <div style="padding:28px 32px 20px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-size:18px;font-weight:800;letter-spacing:-0.02em">Freelancer Registration</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-top:4px" id="wiz-subtitle">Set up your payout profile</div>
+          </div>
+          <button onclick="closeWizard()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;border-radius:2px">✕ Close</button>
+        </div>
+
+        <!-- Wizard step dots -->
+        <div style="display:flex;gap:8px;margin-top:20px">
+          <div class="wdot active" id="wdot-1"></div>
+          <div class="wdot" id="wdot-2"></div>
+          <div class="wdot" id="wdot-3"></div>
+        </div>
+      </div>
+
+      <div style="padding:28px 32px">
+        <div id="wiz-alert" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#fca5a5;padding:12px 16px;border-radius:2px;font-family:'JetBrains Mono',monospace;font-size:12px;margin-bottom:20px"></div>
+
+        <!-- Wizard Step 1: Location -->
+        <div id="wstep-1" class="wstep">
+          <div style="font-size:15px;font-weight:700;margin-bottom:4px">Location & Currency</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:24px">Your country determines which payout methods are available</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div>
+              <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Country *</label>
+              <select id="wiz-country" onchange="wizCountryChange()" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+                <option value="">Select country…</option>
+                <option value="GH">Ghana (GHS)</option>
+                <option value="NG">Nigeria (NGN)</option>
+                <option value="KE">Kenya (KES)</option>
+                <option value="ZA">South Africa (ZAR)</option>
+                <option value="UG">Uganda (UGX)</option>
+                <option value="TZ">Tanzania (TZS)</option>
+                <option value="RW">Rwanda (RWF)</option>
+                <option value="SN">Senegal (XOF)</option>
+                <option value="ZM">Zambia (ZMW)</option>
+                <option value="EG">Egypt (EGP)</option>
+                <option value="GB">United Kingdom (GBP)</option>
+                <option value="DE">Germany (EUR)</option>
+                <option value="FR">France (EUR)</option>
+                <option value="US">United States (USD)</option>
+                <option value="CA">Canada (CAD)</option>
+                <option value="MX">Mexico (MXN)</option>
+                <option value="BR">Brazil (BRL)</option>
+                <option value="CO">Colombia (COP)</option>
+                <option value="IN">India (INR)</option>
+                <option value="PH">Philippines (PHP)</option>
+                <option value="ID">Indonesia (IDR)</option>
+                <option value="SG">Singapore (SGD)</option>
+                <option value="AU">Australia (AUD)</option>
+                <option value="AE">UAE (AED)</option>
+              </select>
+            </div>
+            <div>
+              <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Currency</label>
+              <input id="wiz-currency" readonly style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--accent);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;font-weight:700" placeholder="Auto">
+            </div>
+          </div>
+
+          <div style="margin-top:16px">
+            <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Display Name *</label>
+            <input id="wiz-name" type="text" placeholder="Full name shown on payouts" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+          </div>
+
+          <div style="margin-top:16px">
+            <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Payout Threshold (USD)</label>
+            <input id="wiz-threshold" type="number" value="50" min="10" max="10000" step="10" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);margin-top:6px">Minimum balance before automated payout is triggered.</div>
+          </div>
+
+          <!-- KYC info box -->
+          <div id="wiz-kyc-box" style="display:none;margin-top:20px;padding:14px 16px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.2);border-radius:2px">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--warn);font-weight:600;margin-bottom:4px">KYC Required</div>
+            <div id="wiz-kyc-text" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)"></div>
+          </div>
+        </div>
+
+        <!-- Wizard Step 2: Payout method -->
+        <div id="wstep-2" class="wstep" style="display:none">
+          <div style="font-size:15px;font-weight:700;margin-bottom:4px">Payout Method</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:24px" id="wiz-method-sub">Choose how you receive funds</div>
+
+          <div id="wiz-method-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+            <div id="wm-momo" onclick="wizSelectMethod('momo')" style="padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:2px;cursor:pointer;text-align:center;transition:all 0.15s">
+              <div style="font-size:28px;margin-bottom:8px">📱</div>
+              <div style="font-weight:700;font-size:13px;margin-bottom:4px">Mobile Money</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted)">MTN · M-Pesa · GCash</div>
+            </div>
+            <div id="wm-card" onclick="wizSelectMethod('card')" style="padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:2px;cursor:pointer;text-align:center;transition:all 0.15s">
+              <div style="font-size:28px;margin-bottom:8px">💳</div>
+              <div style="font-weight:700;font-size:13px;margin-bottom:4px">Card Payout</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted)">Visa · Mastercard · Stripe</div>
+            </div>
+          </div>
+
+          <div id="wiz-momo-fields" style="display:none">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div>
+                <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">MoMo Number *</label>
+                <input id="wiz-momo-number" type="tel" placeholder="+233201234567" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+              </div>
+              <div>
+                <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Provider</label>
+                <select id="wiz-momo-provider" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+                  <option value="mtn">MTN MoMo</option>
+                  <option value="mpesa">M-Pesa</option>
+                  <option value="gcash">GCash</option>
+                  <option value="orange">Orange Money</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div id="wiz-card-fields" style="display:none">
+            <label style="display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Card Token *</label>
+            <input id="wiz-card-token" placeholder="tok_xxxx — from Stripe or Paystack" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:2px;outline:none">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);margin-top:6px">Obtain from your payment gateway. Never enter raw card numbers.</div>
+          </div>
+        </div>
+
+        <!-- Wizard Step 3: Confirm -->
+        <div id="wstep-3" class="wstep" style="display:none">
+          <div style="font-size:15px;font-weight:700;margin-bottom:4px">Confirm Registration</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:24px">Review your freelancer profile before submitting</div>
+
+          <div id="wiz-review" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:20px;margin-bottom:20px"></div>
+
+          <div style="padding:14px 16px;background:rgba(0,212,170,0.04);border:1px solid rgba(0,212,170,0.15);border-radius:2px;margin-bottom:20px">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)">
+              After registration your account will be set to <strong style="color:var(--warn)">pending_kyc</strong>.
+              An Executive will review and elevate your KYC tier before payouts are activated.
+            </div>
+          </div>
+        </div>
+
+        <!-- Wizard success -->
+        <div id="wstep-success" style="display:none;text-align:center;padding:24px 0">
+          <div style="width:60px;height:60px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 20px">✓</div>
+          <div style="font-size:20px;font-weight:800;margin-bottom:8px">Freelancer Account Active</div>
+          <div id="wiz-success-text" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);margin-bottom:24px"></div>
+          <button onclick="closeWizard();loadUsers();" style="background:var(--accent);color:#080b10;border:none;padding:12px 28px;font-family:'Syne',sans-serif;font-weight:700;font-size:13px;cursor:pointer;border-radius:2px">View in Users →</button>
+        </div>
+
+        <!-- Wizard buttons -->
+        <div id="wiz-btns" style="display:flex;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)">
+          <button id="wiz-back" onclick="wizPrev()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:11px 20px;font-family:'Syne',sans-serif;font-weight:600;font-size:12px;cursor:pointer;border-radius:2px;display:none">← Back</button>
+          <button id="wiz-next" onclick="wizNext()" style="flex:1;background:var(--accent);color:#080b10;border:none;padding:11px;font-family:'Syne',sans-serif;font-weight:700;font-size:13px;cursor:pointer;border-radius:2px">Continue →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
+  <!-- ── Plane banner ─────────────────────────────────────────────────────── -->
+  <div class="plane-banner client" id="plane-banner">
+    <div class="plane-dot"></div>
+    <span id="plane-label">CLIENT PLANE</span>
+    <span style="color:var(--border-hi);margin:0 8px">·</span>
+    <span id="plane-role-label" style="opacity:0.7">client_partner</span>
+    <span style="color:var(--border-hi);margin:0 8px">·</span>
+    <span id="plane-tenant-label" style="opacity:0.5">tenant-demo-001</span>
+  </div>
+
+  <!-- ── Security page (Business plane only) ──────────────────────────────── -->
+  <div class="page" id="page-security">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Security Intelligence</div>
+        <div class="page-subtitle">Boundary crossings · access denials · intrusion signals · plane audit</div>
+      </div>
+      <button class="btn-refresh" onclick="loadSecurity()">↺ Refresh</button>
+    </div>
+
+    <div class="security-grid" id="security-stat-grid">
+      <div class="security-cell"><div class="security-label">Total Evaluations</div><div class="security-value" id="sec-total" style="color:var(--accent)">—</div><div class="security-sub">last 24 hours</div></div>
+      <div class="security-cell"><div class="security-label">Access Denied</div><div class="security-value" id="sec-denied" style="color:var(--danger)">—</div><div class="security-sub">blocked requests</div></div>
+      <div class="security-cell"><div class="security-label">Boundary Crossings</div><div class="security-value" id="sec-boundary" style="color:var(--warn)">—</div><div class="security-sub">plane violations</div></div>
+      <div class="security-cell"><div class="security-label">Tenant Violations</div><div class="security-value" id="sec-tenant" style="color:var(--danger)">—</div><div class="security-sub">isolation breaches</div></div>
+      <div class="security-cell"><div class="security-label">Elevation Attempts</div><div class="security-value" id="sec-elevation" style="color:var(--warn)">—</div><div class="security-sub">privilege escalation</div></div>
+      <div class="security-cell"><div class="security-label">Distinct Users</div><div class="security-value" id="sec-users" style="color:var(--accent2)">—</div><div class="security-sub">unique principals</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">Plane Breakdown</div>
+          <div class="section-meta">Business vs Client activity</div>
+        </div>
+        <div id="plane-breakdown" style="padding:0">
+          <div class="loading"><div class="spinner"></div>Loading...</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">Top Denied Users</div>
+          <div class="section-meta">Last 24 hours · by denial count</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Plane</th><th>Role</th><th>Denials</th><th>Last Attempt</th></tr></thead>
+            <tbody id="denied-users-tbody"><tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="margin-top:24px">
+      <div class="section-header">
+        <div class="section-title">Recent Access Denials</div>
+        <div class="section-meta" id="denials-meta">—</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>User</th><th>Plane</th><th>Resource</th><th>Reason</th>
+            <th>Boundary</th><th>Tenant Viol.</th><th>Elevation</th><th>Time</th>
+          </tr></thead>
+          <tbody id="denials-tbody"><tr><td colspan="8" class="loading"><div class="spinner"></div></td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -906,7 +1238,11 @@
         <div class="page-title">Identity & Profiles</div>
         <div class="page-subtitle">User onboarding · freelancer registry · KYC tiers · role management</div>
       </div>
-      <button class="btn-refresh" onclick="loadUsers()">↺ Refresh</button>
+      <div style="display:flex;gap:12px">
+        <a href="/register" target="_blank" class="btn-refresh" style="text-decoration:none;display:flex;align-items:center;gap:6px">+ New User</a>
+        <button class="btn-refresh" onclick="openWizard()" style="background:rgba(0,212,170,0.1);border-color:rgba(0,212,170,0.3);color:var(--accent)">⚡ Register Freelancer</button>
+        <button class="btn-refresh" onclick="loadUsers()">↺ Refresh</button>
+      </div>
     </div>
 
     <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
@@ -1076,6 +1412,9 @@ async function doLogin() {
     document.getElementById('user-name').textContent = me.username;
     document.getElementById('user-role').textContent = me.role;
 
+    // Apply dual-plane context
+    applyPlaneContext(me);
+
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
 
@@ -1106,13 +1445,14 @@ function showPage(name) {
   state.currentPage = name;
 
   const loaders = {
-    overview: loadOverview,
-    payouts: loadPayouts,
+    overview:  loadOverview,
+    payouts:   loadPayouts,
     anomalies: loadAnomalies,
-    fx: loadFX,
+    fx:        loadFX,
     compliance: loadCompliance,
-    users: loadUsers,
-    system: loadSystem
+    users:     loadUsers,
+    security:  loadSecurity,
+    system:    loadSystem
   };
   if (loaders[name]) loaders[name]();
 }
@@ -1491,6 +1831,293 @@ function loadAll() {
   loadCompliance();
   loadUsers();
   loadSystem();
+  // Security loaded on demand (business plane only)
+}
+
+// ── Plane context ─────────────────────────────────────────────────────────
+function applyPlaneContext(user) {
+  const plane     = user.control_plane  ?? 'client';
+  const planeRole = user.plane_role     ?? 'client_partner';
+  const tenantScope = user.plane_tenant_scope || user.tenant_id || state.tenant;
+
+  const banner = document.getElementById('plane-banner');
+  banner.className = 'plane-banner ' + plane;
+  document.getElementById('plane-label').textContent       = plane.toUpperCase() + ' PLANE';
+  document.getElementById('plane-role-label').textContent  = planeRole.replace(/_/g,' ');
+  document.getElementById('plane-tenant-label').textContent = tenantScope;
+
+  document.body.classList.remove('plane-business','plane-client');
+  document.body.classList.add('plane-' + plane);
+
+  const secNav = document.getElementById('nav-security');
+  secNav.style.display = plane === 'business' ? '' : 'none';
+
+  state.plane     = plane;
+  state.planeRole = planeRole;
+
+  const roleBadge = document.getElementById('user-role');
+  if (plane === 'business') {
+    roleBadge.style.color      = 'var(--plane-biz-accent)';
+    roleBadge.style.background = 'var(--plane-biz-bg)';
+    roleBadge.style.border     = '1px solid var(--plane-biz-border)';
+    roleBadge.style.padding    = '2px 8px';
+    roleBadge.style.borderRadius = '2px';
+  } else {
+    roleBadge.style.color      = 'var(--plane-cli-accent)';
+    roleBadge.style.background = 'var(--plane-cli-bg)';
+    roleBadge.style.border     = '1px solid var(--plane-cli-border)';
+    roleBadge.style.padding    = '2px 8px';
+    roleBadge.style.borderRadius = '2px';
+  }
+}
+
+// ── Security page ─────────────────────────────────────────────────────────
+async function loadSecurity() {
+  try {
+    const data = await api('/api/v1/admin/access-metrics?limit=50');
+    const s    = data.summary || {};
+
+    document.getElementById('sec-total').textContent     = s.total_evaluations ?? '—';
+    document.getElementById('sec-denied').textContent    = s.total_denied       ?? '—';
+    document.getElementById('sec-boundary').textContent  = s.boundary_crossings ?? '—';
+    document.getElementById('sec-tenant').textContent    = s.tenant_violations   ?? '—';
+    document.getElementById('sec-elevation').textContent = s.elevation_attempts  ?? '—';
+    document.getElementById('sec-users').textContent     = s.distinct_users      ?? '—';
+
+    const pb = data.plane_breakdown || [];
+    document.getElementById('plane-breakdown').innerHTML = pb.length
+      ? pb.map(p => `
+          <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <div style="font-weight:700;color:${p.user_plane==='business'?'var(--plane-biz-accent)':'var(--accent)'};text-transform:uppercase;font-size:12px;margin-bottom:4px">${p.user_plane} PLANE</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)">${p.total} total requests</div>
+            </div>
+            <div style="display:flex;gap:24px;font-family:'JetBrains Mono',monospace;font-size:13px">
+              <div style="text-align:center"><div style="color:var(--success);font-weight:800">${p.granted}</div><div style="color:var(--muted);font-size:10px">granted</div></div>
+              <div style="text-align:center"><div style="color:var(--danger);font-weight:800">${p.denied}</div><div style="color:var(--muted);font-size:10px">denied</div></div>
+            </div>
+          </div>
+        `).join('')
+      : '<div class="empty">No plane activity recorded yet</div>';
+
+    document.getElementById('denied-users-tbody').innerHTML = (data.top_denied_users || []).map(u => `
+      <tr>
+        <td style="font-weight:600">${u.username}</td>
+        <td><span class="badge" style="color:${u.user_plane==='business'?'var(--plane-biz-accent)':'var(--accent)'};background:${u.user_plane==='business'?'var(--plane-biz-bg)':'rgba(0,245,196,0.07)'};border:1px solid ${u.user_plane==='business'?'var(--plane-biz-border)':'rgba(0,245,196,0.2)'}">${u.user_plane}</span></td>
+        <td style="font-size:11px;color:var(--muted)">${u.user_plane_role.replace(/_/g,' ')}</td>
+        <td style="color:var(--danger);font-weight:700">${u.denial_count}</td>
+        <td style="color:var(--muted);font-size:11px">${fmtDate(u.last_attempt)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="empty">No denials recorded</td></tr>';
+
+    const denials = data.recent_denials || [];
+    document.getElementById('denials-meta').textContent = denials.length + ' records';
+    document.getElementById('denials-tbody').innerHTML = denials.map(d => `
+      <tr>
+        <td style="font-weight:600">${d.username}</td>
+        <td><span class="badge badge-muted">${d.user_plane}</span></td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis">${d.requested_resource}</td>
+        <td style="font-size:10px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">${d.denial_reason||'—'}</td>
+        <td>${d.is_boundary_crossing?'<span class="badge badge-warn">YES</span>':'<span class="badge badge-muted">NO</span>'}</td>
+        <td>${d.is_tenant_violation?'<span class="badge badge-danger">YES</span>':'<span class="badge badge-muted">NO</span>'}</td>
+        <td>${d.is_elevation_attempt?'<span class="badge badge-warn">YES</span>':'<span class="badge badge-muted">NO</span>'}</td>
+        <td style="color:var(--muted);font-size:11px">${fmtDate(d.evaluated_at)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="8" class="empty">No denials in last 24 hours</td></tr>';
+
+  } catch(e) {
+    document.getElementById('sec-total').textContent = 'ERR';
+    console.error('Security load error:', e);
+  }
+}
+
+// ── Freelancer Wizard ─────────────────────────────────────────────────
+const WIZ_COUNTRY_CURRENCY = {
+  GH:'GHS',NG:'NGN',KE:'KES',ZA:'ZAR',UG:'UGX',TZ:'TZS',RW:'RWF',
+  SN:'XOF',ZM:'ZMW',EG:'EGP',GB:'GBP',DE:'EUR',FR:'EUR',US:'USD',
+  CA:'CAD',MX:'MXN',BR:'BRL',CO:'COP',IN:'INR',PH:'PHP',ID:'IDR',
+  SG:'SGD',AU:'AUD',AE:'AED'
+};
+const WIZ_COUNTRY_METHODS = {
+  GH:['momo','card'],NG:['momo','card'],KE:['momo','card'],ZA:['card'],
+  UG:['momo'],TZ:['momo'],RW:['momo'],SN:['momo'],ZM:['momo'],EG:['card'],
+  GB:['card'],DE:['card'],FR:['card'],US:['card'],CA:['card'],MX:['card'],
+  BR:['card'],CO:['card'],IN:['card'],PH:['momo','card'],ID:['card'],
+  SG:['card'],AU:['card'],AE:['card']
+};
+const WIZ_KYC_REQUIRED = {
+  EG:'enhanced',US:'enhanced',SG:'enhanced',AE:'enhanced'
+};
+
+let wizStep = 1;
+let wizMethod = null;
+let wizTargetUserId = null;
+
+function openWizard() {
+  // Use the currently logged-in user's ID
+  if (state.user) wizTargetUserId = state.user.id;
+  wizStep = 1;
+  wizMethod = null;
+  document.getElementById('wizard-overlay').style.display = 'flex';
+  document.getElementById('wiz-alert').style.display = 'none';
+  wizRender();
+}
+
+function closeWizard() {
+  document.getElementById('wizard-overlay').style.display = 'none';
+}
+
+function wizRender() {
+  ['wstep-1','wstep-2','wstep-3','wstep-success'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  ['wdot-1','wdot-2','wdot-3'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = 'wdot' + (i + 1 < wizStep ? ' done' : i + 1 === wizStep ? ' active' : '');
+  });
+
+  const backBtn = document.getElementById('wiz-back');
+  const nextBtn = document.getElementById('wiz-next');
+  const btns    = document.getElementById('wiz-btns');
+
+  if (wizStep <= 3) {
+    document.getElementById('wstep-' + wizStep).style.display = 'block';
+    btns.style.display = 'flex';
+    backBtn.style.display = wizStep > 1 ? 'inline-block' : 'none';
+    nextBtn.textContent = wizStep === 3 ? 'Register Freelancer' : 'Continue →';
+  } else {
+    document.getElementById('wstep-success').style.display = 'block';
+    btns.style.display = 'none';
+  }
+}
+
+function wizCountryChange() {
+  const code = document.getElementById('wiz-country').value;
+  document.getElementById('wiz-currency').value = WIZ_COUNTRY_CURRENCY[code] || '';
+
+  const kycReq = WIZ_KYC_REQUIRED[code];
+  const kycBox = document.getElementById('wiz-kyc-box');
+  if (kycReq) {
+    document.getElementById('wiz-kyc-text').textContent =
+      `${code} requires "${kycReq}" KYC tier. An Executive will verify your documents before payouts are enabled.`;
+    kycBox.style.display = 'block';
+  } else {
+    kycBox.style.display = 'none';
+  }
+}
+
+function wizSelectMethod(method) {
+  wizMethod = method;
+  ['momo','card'].forEach(m => {
+    const el = document.getElementById('wm-' + m);
+    el.style.borderColor = m === method ? 'var(--accent)' : 'var(--border)';
+    el.style.background  = m === method ? 'rgba(0,212,170,0.04)' : 'var(--bg)';
+  });
+  document.getElementById('wiz-momo-fields').style.display = method === 'momo' ? 'block' : 'none';
+  document.getElementById('wiz-card-fields').style.display = method === 'card' ? 'block' : 'none';
+}
+
+async function wizNext() {
+  document.getElementById('wiz-alert').style.display = 'none';
+
+  if (wizStep === 1) {
+    const country = document.getElementById('wiz-country').value;
+    const name    = document.getElementById('wiz-name').value.trim();
+    if (!country) { wizAlert('Select your country.'); return; }
+    if (!name)    { wizAlert('Enter your display name.'); return; }
+
+    // Show available methods for country
+    const methods = WIZ_COUNTRY_METHODS[country] || ['card'];
+    document.getElementById('wm-momo').style.display = methods.includes('momo') ? '' : 'none';
+    document.getElementById('wm-card').style.display = methods.includes('card') ? '' : 'none';
+    document.getElementById('wiz-method-sub').textContent =
+      'Available in ' + country + ': ' + methods.join(', ');
+    if (methods.length === 1) wizSelectMethod(methods[0]);
+    wizStep = 2;
+
+  } else if (wizStep === 2) {
+    if (!wizMethod) { wizAlert('Select a payout method.'); return; }
+    if (wizMethod === 'momo' && !document.getElementById('wiz-momo-number').value.trim()) {
+      wizAlert('Enter your MoMo number.'); return;
+    }
+    if (wizMethod === 'card' && !document.getElementById('wiz-card-token').value.trim()) {
+      wizAlert('Enter your card token.'); return;
+    }
+
+    // Build review
+    const country = document.getElementById('wiz-country').value;
+    const rows = [
+      ['Display Name', document.getElementById('wiz-name').value],
+      ['Country',      country + ' (' + (WIZ_COUNTRY_CURRENCY[country] || '—') + ')'],
+      ['Method',       wizMethod],
+      ['Threshold',    '$' + document.getElementById('wiz-threshold').value + ' USD'],
+      wizMethod === 'momo'
+        ? ['MoMo Number', document.getElementById('wiz-momo-number').value]
+        : ['Card Token',  document.getElementById('wiz-card-token').value.slice(0,16) + '...'],
+    ];
+    document.getElementById('wiz-review').innerHTML = rows.map(([k,v]) => `
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:12px">
+        <span style="color:var(--muted)">${k}</span>
+        <span style="color:var(--accent);font-weight:600">${v}</span>
+      </div>
+    `).join('');
+    wizStep = 3;
+
+  } else if (wizStep === 3) {
+    await wizSubmit();
+    return;
+  }
+
+  wizRender();
+}
+
+function wizPrev() {
+  if (wizStep > 1) { wizStep--; wizRender(); }
+}
+
+async function wizSubmit() {
+  const nextBtn = document.getElementById('wiz-next');
+  nextBtn.disabled = true;
+  nextBtn.textContent = 'Registering...';
+
+  try {
+    if (!wizTargetUserId) throw new Error('No user ID — log in first');
+
+    const country = document.getElementById('wiz-country').value;
+
+    const res = await api('/api/v1/users/' + wizTargetUserId + '/freelancer', {
+      method: 'POST',
+      body: JSON.stringify({
+        display_name:         document.getElementById('wiz-name').value.trim(),
+        country_code:         country,
+        payout_method:        wizMethod,
+        momo_number:          document.getElementById('wiz-momo-number').value.trim() || undefined,
+        momo_provider:        document.getElementById('wiz-momo-provider').value || undefined,
+        card_token:           document.getElementById('wiz-card-token').value.trim() || undefined,
+        payout_threshold_usd: parseFloat(document.getElementById('wiz-threshold').value) || 50,
+        preferred_currency:   WIZ_COUNTRY_CURRENCY[country] || 'USD',
+      })
+    });
+
+    document.getElementById('wiz-success-text').textContent =
+      'Agent ID: ' + res.agent_id.slice(0,8) + '... · Country: ' + res.country +
+      ' · Currency: ' + res.currency + ' · KYC required: ' + res.kyc_required;
+
+    wizStep = 4;
+    wizRender();
+
+  } catch(e) {
+    wizAlert(e.message);
+  } finally {
+    nextBtn.disabled = false;
+    nextBtn.textContent = 'Register Freelancer';
+  }
+}
+
+function wizAlert(msg) {
+  const el = document.getElementById('wiz-alert');
+  el.textContent = msg;
+  el.style.display = 'block';
 }
 
 // Enter on login form
