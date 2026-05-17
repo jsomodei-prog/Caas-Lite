@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
@@ -269,6 +269,27 @@ async function main(): Promise<void> {
           const components = await evidenceDb.getComponentsByClient(clientId.trim());
           res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
           res.end(JSON.stringify({ client_id: clientId.trim(), component_count: components.length, components }));
+        } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
+      })(); return;
+    }
+    // ── POST /api/reports/build  (Auditor only) — Phase 8 ────────────────────
+    if (req.method === "POST" && req.url === "/api/reports/build") {
+      const { requireRole: rbac } = await import("./middleware");
+      if (!rbac(req as import("./middleware").CaaSRequest, res, "Auditor")) return;
+      void (async () => {
+        try {
+          const body = JSON.parse(await readBody(req)) as {
+            tenantId?: string; includeAibom?: boolean;
+            includeBillingRuns?: boolean; dateRange?: { start: string; end: string };
+          };
+          if (!body.tenantId?.trim()) { res.writeHead(422); res.end(JSON.stringify({ error: "tenantId is required" })); return; }
+          if (typeof body.includeAibom !== "boolean") { res.writeHead(422); res.end(JSON.stringify({ error: "includeAibom must be boolean" })); return; }
+          if (typeof body.includeBillingRuns !== "boolean") { res.writeHead(422); res.end(JSON.stringify({ error: "includeBillingRuns must be boolean" })); return; }
+          if (!body.dateRange?.start || !body.dateRange?.end) { res.writeHead(422); res.end(JSON.stringify({ error: "dateRange.start and dateRange.end are required ISO8601 strings" })); return; }
+          const result = await evidenceDb.buildReport({ tenantId: body.tenantId.trim(), includeAibom: body.includeAibom, includeBillingRuns: body.includeBillingRuns, dateRange: body.dateRange });
+          logger.info("caas-lite: audit report built", { tenantId: body.tenantId.trim(), reportPath: result.reportPath });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
         } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: (e as Error).message })); }
       })(); return;
     }
