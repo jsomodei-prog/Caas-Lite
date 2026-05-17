@@ -6,3 +6,11 @@ caas_evidence.db
 src-1.zip
 query-evidence.js
 policies/query-evidence.ts
+
+.env
+data/*.db-shm
+data/*.db-wal
+data/*.db
+node_modules/
+dist/
+tmp/

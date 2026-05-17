@@ -1,0 +1,6 @@
+param([string]$ProjectRoot = (Get-Location).Path, [string]$DownloadsDir = "$env:USERPROFILE\Downloads")
+$dirs = @("src","src\db","src\analytics","src\middleware","src\services","src\routes","src\config","data","tmp\backups")
+foreach ($dir in $dirs) { New-Item -ItemType Directory -Force -Path (Join-Path $ProjectRoot $dir) | Out-Null; Write-Host "OK $dir" }
+$map = @{"app.ts"="src\app.ts";"replication.ts"="src\db\replication.ts";"performance.ts"="src\analytics\performance.ts";"rateLimiter.ts"="src\middleware\rateLimiter.ts";"migrate.ts"="src\db\migrate.ts";"payout.ts"="src\services\payout.ts";"fx.ts"="src\services\fx.ts";"auth.ts"="src\routes\auth.ts";"anomaly.ts"="src\analytics\anomaly.ts";"industryProfiles.ts"="src\config\industryProfiles.ts";"countryRequirements.ts"="src\config\countryRequirements.ts"}
+foreach ($k in $map.Keys) { $s=Join-Path $DownloadsDir $k; $d=Join-Path $ProjectRoot $map[$k]; if (Test-Path $s) { Copy-Item $s $d -Force; Write-Host "COPIED $k" } elseif (Test-Path $d) { Write-Host "SKIP $k (already at destination)" } else { Write-Host "MISSING $k" } }
+foreach ($v in $map.Values) { $f=Join-Path $ProjectRoot $v; if(Test-Path $f){Write-Host "OK $v"}else{Write-Host "MISSING $v"} }

@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CaaS-Lite · Register</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #080b10;
+    --surface:  #0d1117;
+    --border:   #1c2230;
+    --border-hi:#2d3a50;
+    --text:     #e2e8f0;
+    --muted:    #4a5568;
+    --accent:   #00d4aa;
+    --accent2:  #3b82f6;
+    --danger:   #ef4444;
+    --success:  #10b981;
+    --warn:     #f59e0b;
+    --glow:     0 0 30px rgba(0,212,170,0.12);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,170,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,170,0.025) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Top bar ─────────────────────────────────────────────────── */
+  .topbar {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 40px;
+    height: 56px;
+    background: rgba(8,11,16,0.95);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+  }
+
+  .brand { display: flex; align-items: center; gap: 12px; }
+
+  .brand-mark {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .brand-name { font-size: 15px; font-weight: 800; letter-spacing: -0.02em; }
+  .brand-tag  { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent); background: rgba(0,212,170,0.08); border: 1px solid rgba(0,212,170,0.2); padding: 2px 8px; border-radius: 2px; letter-spacing: 0.1em; }
+
+  .topbar-right { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--muted); }
+  .topbar-right a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .topbar-right a:hover { text-decoration: underline; }
+
+  /* ── Layout ──────────────────────────────────────────────────── */
+  .main {
+    position: relative; z-index: 1;
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 48px 24px 80px;
+    gap: 48px;
+  }
+
+  /* ── Left panel — hero ───────────────────────────────────────── */
+  .hero {
+    width: 340px;
+    flex-shrink: 0;
+    padding-top: 16px;
+  }
+
+  .hero-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .hero-title {
+    font-size: 42px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+    margin-bottom: 20px;
+  }
+
+  .hero-title span { color: var(--accent); }
+
+  .hero-desc {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.7;
+    margin-bottom: 40px;
+  }
+
+  .feature-list { display: flex; flex-direction: column; gap: 12px; }
+
+  .feature {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+  }
+
+  .feature-icon {
+    width: 28px; height: 28px; flex-shrink: 0;
+    background: rgba(0,212,170,0.1);
+    border: 1px solid rgba(0,212,170,0.2);
+    border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+  }
+
+  .feature-text strong {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+
+  .feature-text span {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* ── Right panel — form ──────────────────────────────────────── */
+  .form-card {
+    width: 520px;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 2px;
+    box-shadow: var(--glow), 0 24px 48px rgba(0,0,0,0.5);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .form-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  }
+
+  /* ── Step indicator ──────────────────────────────────────────── */
+  .steps {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    gap: 0;
+  }
+
+  .step-tab {
+    flex: 1;
+    padding: 16px 0 14px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .step-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .step-tab.done   { color: var(--success); }
+
+  .step-num {
+    display: inline-flex;
+    width: 18px; height: 18px;
+    background: var(--border);
+    border-radius: 50%;
+    align-items: center; justify-content: center;
+    font-size: 9px;
+    margin-right: 6px;
+    transition: all 0.2s;
+  }
+
+  .step-tab.active .step-num { background: var(--accent); color: #080b10; }
+  .step-tab.done   .step-num { background: var(--success); color: #080b10; }
+
+  /* ── Form body ───────────────────────────────────────────────── */
+  .form-body { padding: 32px; }
+
+  .step-panel { display: none; }
+  .step-panel.active { display: block; animation: fadeIn 0.25s ease; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .form-section-title {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+
+  .form-section-sub {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 28px;
+  }
+
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .field-row.full { grid-template-columns: 1fr; }
+
+  .field { margin-bottom: 20px; }
+
+  .field label {
+    display: block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .field label .req { color: var(--accent); margin-left: 3px; }
+
+  .field input, .field select, .field textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 11px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    border-radius: 2px;
+    outline: none;
+    transition: border-color 0.2s;
+    -webkit-appearance: none;
+  }
+
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,212,170,0.07);
+  }
+
+  .field select option { background: var(--surface); }
+
+  .field-hint {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+
+  .field-error {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--danger);
+    margin-top: 6px;
+    display: none;
+  }
+
+  /* ── Role cards ──────────────────────────────────────────────── */
+  .role-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+
+  .role-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 18px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+
+  .role-card:hover { border-color: var(--border-hi); }
+  .role-card.selected { border-color: var(--accent); background: rgba(0,212,170,0.04); }
+
+  .role-card input[type="radio"] { display: none; }
+
+  .role-card-icon {
+    width: 36px; height: 36px; flex-shrink: 0;
+    border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    background: var(--border);
+    transition: background 0.15s;
+  }
+
+  .role-card.selected .role-card-icon { background: rgba(0,212,170,0.15); }
+
+  .role-card-info strong { font-size: 13px; font-weight: 700; display: block; margin-bottom: 2px; }
+  .role-card-info span  { font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+
+  .role-card-check {
+    position: absolute; right: 16px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--bg);
+    transition: all 0.15s;
+  }
+
+  .role-card.selected .role-card-check {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .role-card.selected .role-card-check::after {
+    content: '';
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #080b10;
+  }
+
+  /* ── Method cards ────────────────────────────────────────────── */
+  .method-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+
+  .method-card {
+    padding: 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+  }
+
+  .method-card:hover { border-color: var(--border-hi); }
+  .method-card.selected { border-color: var(--accent); background: rgba(0,212,170,0.04); }
+  .method-card input { display: none; }
+
+  .method-card-icon { font-size: 24px; margin-bottom: 8px; }
+  .method-card strong { display: block; font-size: 12px; font-weight: 700; margin-bottom: 2px; }
+  .method-card span { font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+
+  /* ── Progress bar ────────────────────────────────────────────── */
+  .progress-bar {
+    height: 2px;
+    background: var(--border);
+    margin: 0 32px 28px;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 1px;
+    transition: width 0.4s cubic-bezier(0.16,1,0.3,1);
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────── */
+  .btn-row { display: flex; gap: 12px; margin-top: 28px; }
+
+  .btn-primary {
+    flex: 1;
+    background: var(--accent);
+    color: #080b10;
+    border: none;
+    padding: 13px;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+  }
+
+  .btn-primary:hover:not(:disabled) { background: #00e8ba; transform: translateY(-1px); box-shadow: var(--glow); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  .btn-secondary {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 13px 20px;
+    font-family: 'Syne', sans-serif;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.15s;
+  }
+
+  .btn-secondary:hover { border-color: var(--border-hi); color: var(--text); }
+
+  /* ── Alert ───────────────────────────────────────────────────── */
+  .alert {
+    padding: 12px 16px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    margin-bottom: 20px;
+    display: none;
+  }
+
+  .alert-error   { background: rgba(239,68,68,0.1);  border: 1px solid rgba(239,68,68,0.3);  color: #fca5a5; }
+  .alert-success { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; }
+
+  /* ── Success screen ──────────────────────────────────────────── */
+  #success-screen {
+    display: none;
+    padding: 48px 32px;
+    text-align: center;
+  }
+
+  .success-icon {
+    width: 64px; height: 64px;
+    background: rgba(16,185,129,0.1);
+    border: 1px solid rgba(16,185,129,0.3);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    margin: 0 auto 24px;
+  }
+
+  .success-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; }
+  .success-sub   { font-size: 13px; color: var(--muted); margin-bottom: 32px; font-family: 'JetBrains Mono', monospace; }
+
+  .success-details {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 20px;
+    text-align: left;
+    margin-bottom: 24px;
+  }
+
+  .success-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  .success-row:last-child { border-bottom: none; }
+  .success-row .key { color: var(--muted); }
+  .success-row .val { color: var(--accent); font-weight: 600; }
+
+  /* ── Password strength ───────────────────────────────────────── */
+  .strength-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+
+  .strength-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s, background 0.3s;
+    width: 0;
+  }
+
+  .strength-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── Footer ──────────────────────────────────────────────────── */
+  .signin-link {
+    text-align: center;
+    padding: 20px 32px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .signin-link a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .signin-link a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-mark">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="#080b10"><path d="M8 1L14 4.5V11.5L8 15L2 11.5V4.5L8 1Z"/></svg>
+    </div>
+    <span class="brand-name">CaaS-Lite</span>
+    <span class="brand-tag">v11.0</span>
+  </div>
+  <div class="topbar-right">
+    Already have an account? <a href="/dashboard">Sign in</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ── Hero ────────────────────────────────────────────────────── -->
+  <div class="hero">
+    <div class="hero-eyebrow">CaaS-Lite Platform</div>
+    <div class="hero-title">Get paid<br>across <span>24 markets</span></div>
+    <div class="hero-desc">
+      Register as an agent or partner. Receive payouts in your local
+      currency at real-time exchange rates — MoMo, card, or bank.
+    </div>
+    <div class="feature-list">
+      <div class="feature">
+        <div class="feature-icon">💸</div>
+        <div class="feature-text">
+          <strong>USD → Local Currency</strong>
+          <span>GHS · NGN · KES · ZAR · GBP · EUR + 18 more</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📱</div>
+        <div class="feature-text">
+          <strong>Mobile Money &amp; Card</strong>
+          <span>MTN MoMo · M-Pesa · GCash · Stripe · Paystack</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔐</div>
+        <div class="feature-text">
+          <strong>Compliant &amp; Secure</strong>
+          <span>HIPAA · PCI-DSS · ISO 28000 · AML/KYC</span>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⚡</div>
+        <div class="feature-text">
+          <strong>Real-Time Sweeps</strong>
+          <span>Automated daily payouts with HMAC audit trail</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Form card ────────────────────────────────────────────────── -->
+  <div class="form-card">
+
+    <!-- Step tabs -->
+    <div class="steps">
+      <div class="step-tab active" id="tab-1"><span class="step-num">1</span>Account</div>
+      <div class="step-tab"        id="tab-2"><span class="step-num">2</span>Profile</div>
+      <div class="step-tab"        id="tab-3"><span class="step-num">3</span>Payout</div>
+      <div class="step-tab"        id="tab-4"><span class="step-num">4</span>Confirm</div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-bar" style="margin-top:20px">
+      <div class="progress-fill" id="progress" style="width:25%"></div>
+    </div>
+
+    <div class="form-body">
+      <div class="alert alert-error"   id="alert-error"></div>
+      <div class="alert alert-success" id="alert-success"></div>
+
+      <!-- ── Step 1: Account ──────────────────────────────────────── -->
+      <div class="step-panel active" id="step-1">
+        <div class="form-section-title">Create account</div>
+        <div class="form-section-sub">Your login credentials</div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Username <span class="req">*</span></label>
+            <input type="text" id="f-username" placeholder="your_handle" autocomplete="username">
+            <div class="field-error" id="err-username"></div>
+          </div>
+          <div class="field">
+            <label>Email <span class="req">*</span></label>
+            <input type="email" id="f-email" placeholder="you@example.com" autocomplete="email">
+            <div class="field-error" id="err-email"></div>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Password <span class="req">*</span></label>
+            <input type="password" id="f-password" placeholder="Min 12 characters" autocomplete="new-password" oninput="checkStrength(this.value)">
+            <div class="strength-bar"><div class="strength-fill" id="strength-fill"></div></div>
+            <div class="strength-label" id="strength-label">Enter a password</div>
+            <div class="field-error" id="err-password"></div>
+          </div>
+          <div class="field">
+            <label>Confirm Password <span class="req">*</span></label>
+            <input type="password" id="f-confirm" placeholder="Repeat password" autocomplete="new-password">
+            <div class="field-error" id="err-confirm"></div>
+          </div>
+        </div>
+
+        <div class="field field-row full">
+          <label>I am registering as <span class="req">*</span></label>
+        </div>
+        <div class="role-cards">
+          <label class="role-card selected" id="card-Partner" onclick="selectRole('Partner')">
+            <input type="radio" name="role" value="Partner" checked>
+            <div class="role-card-icon">🤝</div>
+            <div class="role-card-info">
+              <strong>Partner / Freelancer</strong>
+              <span>Receive payouts · manage own profile · global coverage</span>
+            </div>
+            <div class="role-card-check"></div>
+          </label>
+          <label class="role-card" id="card-Auditor" onclick="selectRole('Auditor')">
+            <input type="radio" name="role" value="Auditor">
+            <div class="role-card-icon">🔍</div>
+            <div class="role-card-info">
+              <strong>Auditor</strong>
+              <span>Read-only access · compliance reports · anomaly review</span>
+            </div>
+            <div class="role-card-check"></div>
+          </label>
+        </div>
+
+        <div class="field">
+          <label>Tenant / Organisation ID <span class="req">*</span></label>
+          <input type="text" id="f-tenant" value="tenant-demo-001" placeholder="tenant-id">
+          <div class="field-hint">Provided by your organisation administrator.</div>
+          <div class="field-error" id="err-tenant"></div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-primary" onclick="nextStep(1)">Continue &rarr;</button>
+        </div>
+      </div>
+
+      <!-- ── Step 2: Profile ──────────────────────────────────────── -->
+      <div class="step-panel" id="step-2">
+        <div class="form-section-title">Your profile</div>
+        <div class="form-section-sub">Where are you based?</div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Display Name <span class="req">*</span></label>
+            <input type="text" id="f-displayname" placeholder="Full name or alias">
+          </div>
+          <div class="field">
+            <label>Phone (E.164)</label>
+            <input type="tel" id="f-phone" placeholder="+233201234567">
+            <div class="field-hint">Include country code.</div>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Country <span class="req">*</span></label>
+            <select id="f-country" onchange="onCountryChange()">
+              <option value="">Select country…</option>
+              <option value="GH">Ghana (GHS)</option>
+              <option value="NG">Nigeria (NGN)</option>
+              <option value="KE">Kenya (KES)</option>
+              <option value="ZA">South Africa (ZAR)</option>
+              <option value="UG">Uganda (UGX)</option>
+              <option value="TZ">Tanzania (TZS)</option>
+              <option value="RW">Rwanda (RWF)</option>
+              <option value="SN">Senegal (XOF)</option>
+              <option value="ZM">Zambia (ZMW)</option>
+              <option value="EG">Egypt (EGP)</option>
+              <option value="GB">United Kingdom (GBP)</option>
+              <option value="DE">Germany (EUR)</option>
+              <option value="FR">France (EUR)</option>
+              <option value="US">United States (USD)</option>
+              <option value="CA">Canada (CAD)</option>
+              <option value="MX">Mexico (MXN)</option>
+              <option value="BR">Brazil (BRL)</option>
+              <option value="CO">Colombia (COP)</option>
+              <option value="IN">India (INR)</option>
+              <option value="PH">Philippines (PHP)</option>
+              <option value="ID">Indonesia (IDR)</option>
+              <option value="SG">Singapore (SGD)</option>
+              <option value="AU">Australia (AUD)</option>
+              <option value="AE">UAE (AED)</option>
+            </select>
+            <div class="field-error" id="err-country"></div>
+          </div>
+          <div class="field">
+            <label>Preferred Currency</label>
+            <input type="text" id="f-currency" readonly placeholder="Auto-set by country">
+            <div class="field-hint">Determined by your country.</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Short Bio (optional)</label>
+          <textarea id="f-bio" rows="3" placeholder="Describe your work or service…" style="resize:vertical"></textarea>
+        </div>
+
+        <div class="field" id="freelancer-toggle-field">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="f-freelancer" style="width:16px;height:16px;accent-color:var(--accent)" onchange="toggleFreelancerSection()">
+            <span>Register as a freelancer / payout agent</span>
+          </label>
+          <div class="field-hint">Check this to receive automated payouts in your local currency.</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="prevStep(2)">← Back</button>
+          <button class="btn-primary" onclick="nextStep(2)">Continue →</button>
+        </div>
+      </div>
+
+      <!-- ── Step 3: Payout ───────────────────────────────────────── -->
+      <div class="step-panel" id="step-3">
+        <div class="form-section-title">Payout setup</div>
+        <div class="form-section-sub" id="step3-sub">Configure how you receive funds</div>
+
+        <div id="payout-section">
+          <div class="field">
+            <label>Payout Method <span class="req">*</span></label>
+          </div>
+          <div class="method-cards" id="method-cards">
+            <label class="method-card" id="card-momo" onclick="selectMethod('momo')">
+              <input type="radio" name="method" value="momo">
+              <div class="method-card-icon">📱</div>
+              <strong>Mobile Money</strong>
+              <span>MTN · M-Pesa · GCash · Orange</span>
+            </label>
+            <label class="method-card" id="card-card" onclick="selectMethod('card')">
+              <input type="radio" name="method" value="card">
+              <div class="method-card-icon">💳</div>
+              <strong>Card Payout</strong>
+              <span>Visa · Mastercard · Stripe</span>
+            </label>
+          </div>
+
+          <!-- MoMo fields -->
+          <div id="momo-fields" style="display:none">
+            <div class="field-row">
+              <div class="field">
+                <label>MoMo Number <span class="req">*</span></label>
+                <input type="tel" id="f-momo-number" placeholder="+233201234567">
+              </div>
+              <div class="field">
+                <label>Provider</label>
+                <select id="f-momo-provider">
+                  <option value="mtn">MTN MoMo</option>
+                  <option value="mpesa">M-Pesa</option>
+                  <option value="gcash">GCash</option>
+                  <option value="orange">Orange Money</option>
+                  <option value="vodacom">Vodacom</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card fields -->
+          <div id="card-fields" style="display:none">
+            <div class="field">
+              <label>Card Token <span class="req">*</span></label>
+              <input type="text" id="f-card-token" placeholder="tok_xxxx (from your payment gateway)">
+              <div class="field-hint">Obtain from Stripe / Paystack dashboard. Never enter raw card numbers.</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Payout Threshold (USD)</label>
+            <input type="number" id="f-threshold" value="50" min="10" max="10000" step="10">
+            <div class="field-hint">Minimum balance before a payout sweep is triggered.</div>
+          </div>
+        </div>
+
+        <div id="no-payout-section" style="display:none">
+          <div style="padding:24px;background:var(--bg);border:1px solid var(--border);border-radius:2px;text-align:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:12px">
+            No payout setup needed for Auditor role.<br>You can configure payouts later if your role changes.
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="prevStep(3)">← Back</button>
+          <button class="btn-primary" onclick="nextStep(3)">Review →</button>
+        </div>
+      </div>
+
+      <!-- ── Step 4: Confirm ──────────────────────────────────────── -->
+      <div class="step-panel" id="step-4">
+        <div class="form-section-title">Confirm registration</div>
+        <div class="form-section-sub">Review your details before submitting</div>
+
+        <div id="review-box" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:20px;margin-bottom:24px"></div>
+
+        <div style="padding:16px;background:rgba(0,212,170,0.04);border:1px solid rgba(0,212,170,0.15);border-radius:2px;margin-bottom:20px">
+          <label style="display:flex;align-items:flex-start;gap:12px;cursor:pointer;font-size:12px;color:var(--muted)">
+            <input type="checkbox" id="f-terms" style="width:14px;height:14px;margin-top:2px;accent-color:var(--accent);flex-shrink:0">
+            <span>I agree to the CaaS-Lite platform terms of service, privacy policy, and AML/KYC compliance requirements for my jurisdiction.</span>
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="prevStep(4)">← Back</button>
+          <button class="btn-primary" id="submit-btn" onclick="doRegister()">Create Account</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Success ───────────────────────────────────────────────── -->
+    <div id="success-screen">
+      <div class="success-icon">✓</div>
+      <div class="success-title">Account Created</div>
+      <div class="success-sub" id="success-sub">Welcome to CaaS-Lite</div>
+      <div class="success-details" id="success-details"></div>
+      <a href="/dashboard" class="btn-primary" style="display:block;text-decoration:none;text-align:center;padding:13px">
+        Go to Dashboard →
+      </a>
+    </div>
+
+    <div class="signin-link">
+      Already registered? <a href="/dashboard">Sign in to dashboard</a>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const SERVER = window.location.origin;
+const COUNTRY_CURRENCY = {
+  GH:'GHS',NG:'NGN',KE:'KES',ZA:'ZAR',UG:'UGX',TZ:'TZS',RW:'RWF',
+  SN:'XOF',ZM:'ZMW',EG:'EGP',GB:'GBP',DE:'EUR',FR:'EUR',US:'USD',
+  CA:'CAD',MX:'MXN',BR:'BRL',CO:'COP',IN:'INR',PH:'PHP',ID:'IDR',
+  SG:'SGD',AU:'AUD',AE:'AED'
+};
+const COUNTRY_METHODS = {
+  GH:['momo','card'],NG:['momo','card'],KE:['momo','card'],ZA:['card'],
+  UG:['momo'],TZ:['momo'],RW:['momo'],SN:['momo'],ZM:['momo'],EG:['card'],
+  GB:['card'],DE:['card'],FR:['card'],US:['card'],CA:['card'],MX:['card'],
+  BR:['card'],CO:['card'],IN:['card'],PH:['momo','card'],ID:['card'],
+  SG:['card'],AU:['card'],AE:['card']
+};
+
+let currentStep = 1;
+let selectedRole   = 'Partner';
+let selectedMethod = null;
+let createdUserId  = null;
+
+// ── Step navigation ───────────────────────────────────────────────────
+function goToStep(n) {
+  document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.step-tab').forEach((t, i) => {
+    t.classList.remove('active');
+    if (i + 1 < n)  t.classList.add('done');
+    if (i + 1 === n) t.classList.add('active');
+    if (i + 1 > n)  t.classList.remove('done');
+  });
+  document.getElementById('step-' + n).classList.add('active');
+  document.getElementById('progress').style.width = (n * 25) + '%';
+  currentStep = n;
+  clearAlerts();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function nextStep(from) {
+  if (!validateStep(from)) return;
+  if (from === 2) prepareStep3();
+  if (from === 3) buildReview();
+  goToStep(from + 1);
+}
+
+function prevStep(from) { goToStep(from - 1); }
+
+// ── Validation ────────────────────────────────────────────────────────
+function validateStep(step) {
+  clearFieldErrors();
+  let ok = true;
+
+  if (step === 1) {
+    const u = val('f-username'), e = val('f-email'), p = val('f-password'), c = val('f-confirm'), t = val('f-tenant');
+    if (!u || u.length < 3)  { fieldErr('err-username', 'Min 3 characters'); ok = false; }
+    if (!e || !e.includes('@')) { fieldErr('err-email', 'Enter a valid email'); ok = false; }
+    if (!p || p.length < 12) { fieldErr('err-password', 'Min 12 characters'); ok = false; }
+    else if (!/[A-Z]/.test(p)) { fieldErr('err-password', 'Must contain uppercase'); ok = false; }
+    else if (!/[0-9]/.test(p)) { fieldErr('err-password', 'Must contain a digit'); ok = false; }
+    else if (!/[^A-Za-z0-9]/.test(p)) { fieldErr('err-password', 'Must contain special char'); ok = false; }
+    if (p !== c) { fieldErr('err-confirm', 'Passwords do not match'); ok = false; }
+    if (!t)      { fieldErr('err-tenant', 'Tenant ID required'); ok = false; }
+  }
+
+  if (step === 2) {
+    if (!val('f-displayname')) { showAlert('error', 'Display name is required.'); ok = false; }
+    if (!val('f-country'))     { fieldErr('err-country', 'Select your country'); ok = false; }
+  }
+
+  if (step === 3 && selectedRole === 'Partner' && document.getElementById('f-freelancer').checked) {
+    if (!selectedMethod) { showAlert('error', 'Select a payout method.'); ok = false; }
+    if (selectedMethod === 'momo' && !val('f-momo-number')) { showAlert('error', 'Enter your MoMo number.'); ok = false; }
+    if (selectedMethod === 'card' && !val('f-card-token'))  { showAlert('error', 'Enter your card token.'); ok = false; }
+  }
+
+  if (step === 4) {
+    if (!document.getElementById('f-terms').checked) { showAlert('error', 'You must accept the terms to continue.'); ok = false; }
+  }
+
+  return ok;
+}
+
+// ── Role selection ────────────────────────────────────────────────────
+function selectRole(role) {
+  selectedRole = role;
+  document.querySelectorAll('.role-card').forEach(c => c.classList.remove('selected'));
+  document.getElementById('card-' + role).classList.add('selected');
+  // Hide freelancer toggle for Auditor
+  document.getElementById('freelancer-toggle-field').style.display = role === 'Partner' ? 'block' : 'none';
+  if (role === 'Auditor') document.getElementById('f-freelancer').checked = false;
+}
+
+// ── Country change ────────────────────────────────────────────────────
+function onCountryChange() {
+  const code = val('f-country');
+  document.getElementById('f-currency').value = COUNTRY_CURRENCY[code] || '';
+}
+
+// ── Freelancer toggle ─────────────────────────────────────────────────
+function toggleFreelancerSection() {}
+
+// ── Method selection ──────────────────────────────────────────────────
+function selectMethod(method) {
+  selectedMethod = method;
+  document.querySelectorAll('.method-card').forEach(c => c.classList.remove('selected'));
+  document.getElementById('card-' + method).classList.add('selected');
+  document.getElementById('momo-fields').style.display = method === 'momo' ? 'block' : 'none';
+  document.getElementById('card-fields').style.display = method === 'card' ? 'block' : 'none';
+}
+
+// ── Step 3 prep ───────────────────────────────────────────────────────
+function prepareStep3() {
+  const isFreelancer = document.getElementById('f-freelancer').checked && selectedRole === 'Partner';
+  document.getElementById('payout-section').style.display    = isFreelancer ? 'block' : 'none';
+  document.getElementById('no-payout-section').style.display = isFreelancer ? 'none'  : 'block';
+
+  const country = val('f-country');
+  const methods = COUNTRY_METHODS[country] || ['card'];
+
+  document.getElementById('card-momo').style.display = methods.includes('momo') ? '' : 'none';
+  document.getElementById('card-card').style.display = methods.includes('card') ? '' : 'none';
+
+  // Auto-select only available method
+  if (methods.length === 1) selectMethod(methods[0]);
+}
+
+// ── Review builder ────────────────────────────────────────────────────
+function buildReview() {
+  const isFreelancer = document.getElementById('f-freelancer').checked && selectedRole === 'Partner';
+  const rows = [
+    ['Username',    val('f-username')],
+    ['Email',       val('f-email')],
+    ['Role',        selectedRole],
+    ['Display Name',val('f-displayname')],
+    ['Country',     val('f-country') + ' (' + (COUNTRY_CURRENCY[val('f-country')] || '—') + ')'],
+    ['Freelancer',  isFreelancer ? 'Yes — ' + (selectedMethod || 'no method selected') : 'No'],
+    ['Tenant',      val('f-tenant')],
+  ];
+  document.getElementById('review-box').innerHTML = rows.map(([k, v]) => `
+    <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:12px">
+      <span style="color:var(--muted)">${k}</span>
+      <span style="color:var(--accent);font-weight:600">${v || '—'}</span>
+    </div>
+  `).join('');
+}
+
+// ── Password strength ─────────────────────────────────────────────────
+function checkStrength(pw) {
+  let score = 0;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw)) score++;
+  if (/[0-9]/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  if (pw.length >= 20) score++;
+
+  const colors = ['#ef4444','#f59e0b','#f59e0b','#10b981','#00d4aa'];
+  const labels = ['Too weak','Weak','Fair','Strong','Very strong'];
+  const fill   = document.getElementById('strength-fill');
+  fill.style.width      = (score * 20) + '%';
+  fill.style.background = colors[score - 1] || '#4a5568';
+  document.getElementById('strength-label').textContent = score > 0 ? labels[score - 1] : 'Enter a password';
+}
+
+// ── Registration ──────────────────────────────────────────────────────
+async function doRegister() {
+  if (!validateStep(4)) return;
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating account...';
+
+  const tenantId = val('f-tenant');
+
+  try {
+    // Step A: Register user
+    const regRes = await fetch(SERVER + '/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': tenantId, 'X-CaaS-Tier': 'GROWTH' },
+      body: JSON.stringify({
+        username:  val('f-username'),
+        email:     val('f-email'),
+        password:  val('f-password'),
+        role:      selectedRole,
+        tenant_id: tenantId,
+      })
+    });
+    const regData = await regRes.json();
+    if (!regRes.ok) throw new Error(regData.error || 'Registration failed');
+
+    createdUserId = regData.user_id;
+
+    // Step B: Login to get token for profile calls
+    const loginRes = await fetch(SERVER + '/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: val('f-username'), password: val('f-password'), tenant_id: tenantId })
+    });
+    const loginData = await loginRes.json();
+    if (!loginRes.ok) throw new Error('Login after registration failed');
+    const token = loginData.access_token;
+
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token,
+      'X-Tenant-ID': tenantId,
+      'X-CaaS-Tier': 'GROWTH',
+    };
+
+    // Step C: Save extended profile
+    await fetch(SERVER + '/api/v1/users/' + createdUserId + '/profile', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        display_name:       val('f-displayname'),
+        phone:              val('f-phone') || null,
+        country_code:       val('f-country') || null,
+        preferred_currency: COUNTRY_CURRENCY[val('f-country')] || null,
+        bio:                val('f-bio') || null,
+      })
+    });
+
+    // Step D: Freelancer registration (if applicable)
+    if (document.getElementById('f-freelancer').checked && selectedRole === 'Partner' && selectedMethod) {
+      await fetch(SERVER + '/api/v1/users/' + createdUserId + '/freelancer', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          display_name:         val('f-displayname'),
+          country_code:         val('f-country'),
+          payout_method:        selectedMethod,
+          momo_number:          val('f-momo-number') || undefined,
+          momo_provider:        val('f-momo-provider') || undefined,
+          card_token:           val('f-card-token')   || undefined,
+          payout_threshold_usd: parseFloat(val('f-threshold') || '50'),
+          preferred_currency:   COUNTRY_CURRENCY[val('f-country')] || 'USD',
+        })
+      });
+    }
+
+    // Success
+    showSuccess(regData);
+
+  } catch(e) {
+    showAlert('error', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create Account';
+  }
+}
+
+function showSuccess(data) {
+  document.querySelector('.form-body').style.display = 'none';
+  document.querySelector('.steps').style.display = 'none';
+  document.querySelector('.progress-bar').style.display = 'none';
+  document.querySelector('.signin-link').style.display = 'none';
+  document.getElementById('success-screen').style.display = 'block';
+
+  const isFreelancer = document.getElementById('f-freelancer').checked && selectedRole === 'Partner';
+  document.getElementById('success-sub').textContent =
+    isFreelancer ? 'Freelancer account ready. KYC verification pending.' : 'Account created. Sign in to continue.';
+
+  document.getElementById('success-details').innerHTML = [
+    ['User ID',   data.user_id.slice(0,8) + '...'],
+    ['Username',  data.username],
+    ['Email',     data.email],
+    ['Role',      data.role],
+    ['Tenant',    data.tenant_id],
+    ['Status',    isFreelancer ? 'Pending KYC' : 'Active'],
+  ].map(([k,v]) => `
+    <div class="success-row">
+      <span class="key">${k}</span>
+      <span class="val">${v}</span>
+    </div>
+  `).join('');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+function val(id) { return (document.getElementById(id)?.value || '').trim(); }
+function showAlert(type, msg) {
+  const el = document.getElementById('alert-' + type);
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function clearAlerts() {
+  document.getElementById('alert-error').style.display   = 'none';
+  document.getElementById('alert-success').style.display = 'none';
+}
+function fieldErr(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; el.style.display = 'block'; }
+}
+function clearFieldErrors() {
+  document.querySelectorAll('.field-error').forEach(e => e.style.display = 'none');
+}
+</script>
+</body>
+</html>
