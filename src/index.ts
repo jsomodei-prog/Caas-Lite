@@ -1,3 +1,5 @@
+﻿import "dotenv/config";
+
 /**
  * src/index.ts
  * CaaS-Lite platform entry point.

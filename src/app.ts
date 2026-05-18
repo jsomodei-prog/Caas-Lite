@@ -13,7 +13,7 @@
  *   7.  Global middleware (helmet, CORS, compression, body parsing)
  *   8.  Request timing middleware
  *   9.  Rate limiter middleware
- *   10. API routes (auth, users, commercial, payouts, anomalies, fx, compliance, admin, queue)
+ *   10. API routes (auth, users, commercial, payouts, anomalies, fx, compliance, admin, queue, regulatory)
  *   11. /metrics Prometheus endpoint
  *   12. /health + /dashboard endpoints
  *   13. 404 handler
@@ -21,6 +21,7 @@
  *   15. Graceful-shutdown hooks
  *
  * Phase 12-13 build-out | Commit baseline: cc20b1a
+ * Phase 14 update      | Dynamic regulatory ingestion replaces hardcoded compliance profiles.
  */
 
 import "express-async-errors";
@@ -55,6 +56,12 @@ import {
   getAccessMetricsHandler,
   requireBusinessPlane,
 } from "./middleware/dualPlaneAuth";
+
+// ─── Phase 14: Dynamic Regulatory Ingestion ──────────────────────────────────
+// Replaces ./config/industryProfiles and ./config/countryRequirements imports.
+// Frameworks are now loaded from regulatory_frameworks / regulatory_field_rules /
+// regulatory_consent_purposes tables and managed via /api/v1/regulatory.
+import { createRegulatoryIngestRouter } from "./routes/regulatoryIngest";
 
 // ─── Environment Validation ───────────────────────────────────────────────────
 
@@ -366,6 +373,11 @@ export function createApp(): AppContext {
   // Commercial pipeline + insurance underwriting (Phase 12-13)
   apiV1.use("/commercial", createCommercialRouter());
 
+  // ── Phase 14: Dynamic regulatory ingestion ──────────────────────────────
+  // Admin-only onboarding + CRUD for region frameworks (Ghana Act 843, NDPA, etc.).
+  // All sub-routes are internally gated by requireBusinessPlane(["global_super_admin"]).
+  apiV1.use("/regulatory", createRegulatoryIngestRouter(db));
+
   // Payouts
   apiV1.post("/payouts/sweep", async (req, res) => {
     const { runPayoutSweep } = await import("./services/payout");
@@ -472,33 +484,69 @@ export function createApp(): AppContext {
     res.status(201).json(result);
   });
 
-  // Compliance profiles
-  apiV1.get("/compliance/profiles", async (_req, res) => {
-    const { listProfileIds, getProfile } = await import("./config/industryProfiles");
-    res.json(listProfileIds().map((id) => {
-      const p = getProfile(id);
-      return { id, display_name: p.metadata.display_name, version: p.metadata.version };
-    }));
+  // ── Phase 14: Compliance endpoints now read from regulatory_frameworks ──
+  // The old ./config/industryProfiles and ./config/countryRequirements modules
+  // are retired. These endpoints preserve the public response shape so existing
+  // clients keep working, but now resolve frameworks from the database.
+
+  apiV1.get("/compliance/profiles", (_req, res) => {
+    const rows = db.prepare(`
+      SELECT
+        framework_code AS id,
+        framework_name AS display_name,
+        version
+      FROM regulatory_frameworks
+      WHERE is_active = 1
+      ORDER BY framework_name ASC
+    `).all();
+    res.json(rows);
   });
 
-  // Compliance countries
-  apiV1.get("/compliance/countries", async (_req, res) => {
-    const { listSupportedCountries, getCountryRequirement } = await import("./config/countryRequirements");
-    res.json({
-      data: listSupportedCountries().map((code) => {
-        const r = getCountryRequirement(code);
-        return {
-          country_code:         code,
-          country_name:         r.country_name,
-          local_currency:       r.local_currency,
-          supported_methods:    r.supported_methods.map((m) => m.method),
-          min_kyc_tier:         r.min_kyc_tier,
-          withholding_tax_rate: r.withholding_tax_rate,
-          regulator:            r.regulator,
-        };
-      }),
-      total: listSupportedCountries().length,
+  apiV1.get("/compliance/countries", (_req, res) => {
+    const rows = db.prepare(`
+      SELECT
+        region_code AS country_code,
+        region_name AS country_name,
+        framework_code,
+        framework_name,
+        regulator_name AS regulator,
+        version,
+        effective_date,
+        metadata
+      FROM regulatory_frameworks
+      WHERE is_active = 1
+      ORDER BY region_name ASC
+    `).all() as Array<{
+      country_code: string;
+      country_name: string;
+      framework_code: string;
+      framework_name: string;
+      regulator: string | null;
+      version: string;
+      effective_date: string | null;
+      metadata: string;
+    }>;
+
+    const data = rows.map((r) => {
+      let meta: Record<string, unknown> = {};
+      try { meta = r.metadata ? JSON.parse(r.metadata) : {}; } catch { /* swallow */ }
+      return {
+        country_code:   r.country_code,
+        country_name:   r.country_name,
+        framework_code: r.framework_code,
+        framework_name: r.framework_name,
+        regulator:      r.regulator,
+        version:        r.version,
+        effective_date: r.effective_date,
+        // Surface common metadata keys when present so legacy clients see them.
+        local_currency:       meta.local_currency       ?? null,
+        min_kyc_tier:         meta.min_kyc_tier         ?? null,
+        withholding_tax_rate: meta.withholding_tax_rate ?? null,
+        supported_methods:    meta.supported_methods    ?? [],
+      };
     });
+
+    res.json({ data, total: data.length });
   });
 
   // Notification test (Phase 11) — POST /api/v1/admin/notify/test

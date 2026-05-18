@@ -48,6 +48,10 @@
  *   );
  *
  * Phase 12 Roles build-out | Commit baseline: 9f99b40
+ * Phase 14 cleanup        : removed dead code in evaluateBoundary (unused
+ *                           isMutatingRequest, httpMethod, businessWriteBlocked
+ *                           locals) and collapsed redundant 403-or-403 ternary
+ *                           in requireDualPlane. No behavioural change.
  */
 
 import crypto from "crypto";
@@ -501,18 +505,11 @@ function evaluateBoundary(
     };
   }
 
-  // ── Check 4: BUSINESS plane write protection ──────────────────────────────
-  // Non-global_super_admin business plane users cannot mutate client tenant data.
-  const isMutatingRequest = ["POST", "PUT", "PATCH", "DELETE"].includes((require as NodeRequire & {})("http") ? "" : "");
-  const httpMethod = "";  // evaluated at runtime via req.method in the middleware
+  // ── Check 4: BUSINESS plane write protection is enforced in the
+  //            middleware itself (requireDualPlane) once req.method is
+  //            available, not here. This function returns granted=true at
+  //            this point; the caller performs the method-based check.
 
-  // (httpMethod evaluated in middleware; here we signal writeProtection for later check)
-  const businessWriteBlocked =
-    userPlane === "business" &&
-    userRole !== "global_super_admin" &&
-    !PLANE_ROLE_CAPABILITIES[userRole].can_write_all_tenants;
-
-  // We return granted=true here; the middleware will check req.method for write protection.
   return {
     granted:             true,
     denialReason:        null,
@@ -614,9 +611,8 @@ export function requireDualPlane(requirement: DualPlaneRequirement) {
         isElevationAttempt:  evaluation.isElevationAttempt,
       });
 
-      const statusCode = evaluation.isBoundaryCrossing || evaluation.isTenantViolation ? 403 : 403;
-
-      res.status(statusCode).json({
+      // All denial paths return 403; the body flags the specific reason.
+      res.status(403).json({
         error:                "Access denied",
         detail:               evaluation.denialReason,
         plane:                principal.control_plane,

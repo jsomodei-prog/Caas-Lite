@@ -17,6 +17,9 @@
  *
  * Baseline commit : a4f5db6
  * Covers          : all tables up to and including Phase 9 + FX build-out.
+ * Phase 14 update : migration 016 — dynamic regulatory framework ingestion
+ *                   (replaces hardcoded ./config/industryProfiles and
+ *                    ./config/countryRequirements modules).
  */
 
 import Database from "better-sqlite3";
@@ -584,6 +587,120 @@ const MIGRATIONS: Migration[] = [
         "idx_regulatory_report_log_must_file_by",
         `CREATE INDEX IF NOT EXISTS idx_regulatory_report_log_must_file_by
          ON regulatory_report_log (must_file_by)`
+      );
+    },
+  },
+
+  // ── 016 ── Phase 14: Dynamic regulatory framework ingestion ────────────────
+  //           Replaces hardcoded ./config/industryProfiles and
+  //           ./config/countryRequirements modules. Three tables:
+  //             1. regulatory_frameworks        — top-level framework per region
+  //             2. regulatory_field_rules       — schema + verification regex per field
+  //             3. regulatory_consent_purposes  — lawful bases / consent purposes
+  {
+    version: 16,
+    description:
+      "Phase 14 — dynamic regulatory framework ingestion " +
+      "(frameworks, field rules, consent purposes)",
+    up(db) {
+      // ── regulatory_frameworks ────────────────────────────────────────────
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS regulatory_frameworks (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          framework_code       TEXT    NOT NULL UNIQUE,
+          framework_name       TEXT    NOT NULL,
+          region_code          TEXT    NOT NULL,
+          region_name          TEXT    NOT NULL,
+          regulator_name       TEXT,
+          version              TEXT    NOT NULL,
+          description          TEXT,
+          source_url           TEXT,
+          effective_date       TEXT,
+          is_active            INTEGER NOT NULL DEFAULT 1
+                                CHECK (is_active IN (0, 1)),
+          metadata             TEXT    NOT NULL DEFAULT '{}',
+          created_by_user_id   TEXT,
+          created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+      `).run();
+
+      createIndexIfMissing(
+        db,
+        "idx_reg_frameworks_region_active",
+        `CREATE INDEX IF NOT EXISTS idx_reg_frameworks_region_active
+         ON regulatory_frameworks (region_code, is_active)`
+      );
+      createIndexIfMissing(
+        db,
+        "idx_reg_frameworks_code",
+        `CREATE INDEX IF NOT EXISTS idx_reg_frameworks_code
+         ON regulatory_frameworks (framework_code)`
+      );
+
+      // ── regulatory_field_rules ───────────────────────────────────────────
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS regulatory_field_rules (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          framework_id     INTEGER NOT NULL REFERENCES regulatory_frameworks(id)
+                            ON DELETE CASCADE,
+          field_key        TEXT    NOT NULL,
+          field_label      TEXT    NOT NULL,
+          data_type        TEXT    NOT NULL
+                            CHECK (data_type IN (
+                              'string','number','boolean','date',
+                              'email','phone','identifier'
+                            )),
+          is_required      INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_required  IN (0, 1)),
+          is_sensitive     INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_sensitive IN (0, 1)),
+          min_length       INTEGER,
+          max_length       INTEGER,
+          validation_regex TEXT,
+          regex_flags      TEXT    NOT NULL DEFAULT '',
+          error_message    TEXT,
+          allowed_values   TEXT,                          -- JSON array, NULL if not enum
+          constraints      TEXT    NOT NULL DEFAULT '{}', -- JSON object
+          display_order    INTEGER NOT NULL DEFAULT 0,
+          created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (framework_id, field_key)
+        )
+      `).run();
+
+      createIndexIfMissing(
+        db,
+        "idx_reg_field_rules_framework",
+        `CREATE INDEX IF NOT EXISTS idx_reg_field_rules_framework
+         ON regulatory_field_rules (framework_id)`
+      );
+
+      // ── regulatory_consent_purposes ──────────────────────────────────────
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS regulatory_consent_purposes (
+          id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+          framework_id              INTEGER NOT NULL REFERENCES regulatory_frameworks(id)
+                                     ON DELETE CASCADE,
+          purpose_code              TEXT    NOT NULL,
+          purpose_label             TEXT    NOT NULL,
+          description               TEXT,
+          lawful_basis              TEXT,
+          requires_explicit_consent INTEGER NOT NULL DEFAULT 0
+                                     CHECK (requires_explicit_consent IN (0, 1)),
+          retention_days            INTEGER,
+          created_at                TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at                TEXT    NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (framework_id, purpose_code)
+        )
+      `).run();
+
+      createIndexIfMissing(
+        db,
+        "idx_reg_consent_purposes_framework",
+        `CREATE INDEX IF NOT EXISTS idx_reg_consent_purposes_framework
+         ON regulatory_consent_purposes (framework_id)`
       );
     },
   },
