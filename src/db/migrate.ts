@@ -25,6 +25,7 @@
 import Database from "better-sqlite3";
 import type { Database as DB } from "better-sqlite3";
 import path from "path";
+import { PHASE15_MIGRATIONS } from "./migrations/phase15_commercial_activation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,71 @@ function createIndexIfMissing(
   if (!existingIndexes(db).has(indexName)) {
     db.prepare(ddl).run();
   }
+}
+
+// ─── One-shot Reconciliation ──────────────────────────────────────────────────
+
+/**
+ * Pre-migration reconciliation for the v31→v17 renumbering of the Phase-12
+ * role migrations. Runs idempotently on every connect.
+ *
+ * If schema_migrations has rows at the legacy versions 31–35 (left behind by
+ * the now-retired migrate-p12-roles script), this rewrites their version
+ * numbers in place to 17–21 so the canonical runner recognises them as
+ * applied. Original applied_at timestamps and descriptions are preserved.
+ *
+ * Safe to call on a fresh DB (no-op), a fully-reconciled DB (no-op), or a
+ * partially-applied DB (remaps whichever legacy rows exist, leaves the rest).
+ *
+ * Remove once all environments are confirmed reconciled.
+ */
+function reconcilePhase12Renumber(db: DB): void {
+  if (!tableExists(db, "schema_migrations")) return;
+
+  const LEGACY_TO_CANONICAL: ReadonlyArray<readonly [number, number]> = [
+    [31, 17], [32, 18], [33, 19], [34, 20], [35, 21],
+  ];
+
+  const existingLegacy = new Set(
+    (db.prepare(
+      "SELECT version FROM schema_migrations WHERE version IN (31,32,33,34,35)"
+    ).all() as { version: number }[]).map(r => r.version)
+  );
+  if (existingLegacy.size === 0) return;
+
+  const existingCanonical = new Set(
+    (db.prepare(
+      "SELECT version FROM schema_migrations WHERE version IN (17,18,19,20,21)"
+    ).all() as { version: number }[]).map(r => r.version)
+  );
+
+  // Guard: if a legacy row AND its canonical target both exist, that's an
+  // ambiguous state we won't silently resolve. Bail loudly.
+  for (const [legacy, canonical] of LEGACY_TO_CANONICAL) {
+    if (existingLegacy.has(legacy) && existingCanonical.has(canonical)) {
+      throw new Error(
+        `[migrate] reconcilePhase12Renumber: both v${legacy} (legacy) and ` +
+        `v${canonical} (canonical) exist in schema_migrations. Cannot ` +
+        `safely renumber; manual cleanup required.`
+      );
+    }
+  }
+
+  const update = db.prepare(
+    "UPDATE schema_migrations SET version = ? WHERE version = ?"
+  );
+
+  db.transaction(() => {
+    for (const [legacy, canonical] of LEGACY_TO_CANONICAL) {
+      if (existingLegacy.has(legacy)) {
+        update.run(canonical, legacy);
+        console.log(
+          `[migrate] reconciled phase12 v${legacy} → v${canonical} ` +
+          `(applied_at preserved)`
+        );
+      }
+    }
+  })();
 }
 
 // ─── Migration Definitions ────────────────────────────────────────────────────
@@ -494,21 +560,18 @@ const MIGRATIONS: Migration[] = [
   //           WAL is the correct journal mode for a concurrent web server.
   //           Foreign key enforcement is off by default in SQLite.
   {
-    version: 13,
-    description:
-      "Enable WAL journal mode, foreign key enforcement, and recommended PRAGMAs",
-    up(db) {
-      // These are connection-level PRAGMAs, not persisted schema changes,
-      // but recording them here documents the required startup settings and
-      // ensures they are applied on every fresh database as part of migration.
-      db.pragma("journal_mode = WAL");
-      db.pragma("foreign_keys = ON");
-      db.pragma("synchronous = NORMAL"); // Safe with WAL; faster than FULL
-      db.pragma("temp_store = MEMORY");
-      db.pragma("mmap_size = 268435456"); // 256 MiB
-      db.pragma("cache_size = -16000");   // 16 MiB page cache
-    },
+  version: 13,
+  description:
+    "Enable WAL journal mode, foreign key enforcement, and recommended PRAGMAs (no-op — see openDatabase)",
+  up(_db) {
+    // No-op. PRAGMAs cannot be set inside a transaction — and the migration
+    // runner wraps each up() in db.transaction(). These connection-level
+    // settings are applied unconditionally in openDatabase() on every connect,
+    // which is the correct place for them. This entry remains so that the
+    // schema_migrations version sequence stays contiguous with existing
+    // production databases that recorded v13 before the bug was found.
   },
+},
 
   // ── 014 ── Compliance report audit table ───────────────────────────────────
   //           SHA-256 signed compliance reports from the existing report
@@ -705,6 +768,197 @@ const MIGRATIONS: Migration[] = [
     },
   },
 
+  // ── 017 ── Phase 12: extend users with control_plane / plane_role ────────
+  {
+    version: 17,
+    description: "Add control_plane and plane_role columns to users table",
+    up(db) {
+      addColumnIfMissing(
+        db, "users", "control_plane",
+        "TEXT NOT NULL DEFAULT 'client' CHECK (control_plane IN ('business','client'))"
+      );
+      addColumnIfMissing(
+        db, "users", "plane_role",
+        "TEXT NOT NULL DEFAULT 'client_partner'"
+      );
+      addColumnIfMissing(db, "users", "plane_tenant_scope", "TEXT");
+      addColumnIfMissing(db, "users", "plane_assigned_at", "TEXT");
+      addColumnIfMissing(db, "users", "plane_assigned_by", "TEXT");
+
+      createIndexIfMissing(
+        db, "idx_users_control_plane",
+        `CREATE INDEX IF NOT EXISTS idx_users_control_plane
+         ON users(control_plane, plane_role)`
+      );
+      createIndexIfMissing(
+        db, "idx_users_plane_tenant",
+        `CREATE INDEX IF NOT EXISTS idx_users_plane_tenant
+         ON users(plane_tenant_scope, control_plane)`
+      );
+    },
+  },
+
+  // ── 018 ── Phase 12: role_access_metrics boundary-crossing audit log ─────
+  {
+    version: 18,
+    description: "Create role_access_metrics boundary crossing audit table",
+    up(db) {
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS role_access_metrics (
+          id                    TEXT     PRIMARY KEY,
+          user_id               TEXT     NOT NULL,
+          username              TEXT     NOT NULL,
+          user_plane            TEXT     NOT NULL,
+          user_plane_role       TEXT     NOT NULL,
+          user_tenant_id        TEXT,
+          requested_resource    TEXT     NOT NULL,
+          requested_method      TEXT     NOT NULL,
+          required_plane        TEXT,
+          required_roles        TEXT     NOT NULL,
+          access_granted        INTEGER  NOT NULL DEFAULT 0
+                                         CHECK (access_granted IN (0, 1)),
+          denial_reason         TEXT,
+          is_boundary_crossing  INTEGER  NOT NULL DEFAULT 0
+                                         CHECK (is_boundary_crossing IN (0, 1)),
+          is_tenant_violation   INTEGER  NOT NULL DEFAULT 0
+                                         CHECK (is_tenant_violation IN (0, 1)),
+          is_elevation_attempt  INTEGER  NOT NULL DEFAULT 0
+                                         CHECK (is_elevation_attempt IN (0, 1)),
+          ip_address            TEXT,
+          user_agent            TEXT,
+          request_id            TEXT,
+          evaluated_at          TEXT     NOT NULL,
+          denial_count_1h       INTEGER  NOT NULL DEFAULT 0
+        )
+      `).run();
+
+      createIndexIfMissing(db, "idx_ram_user_id",
+        `CREATE INDEX IF NOT EXISTS idx_ram_user_id
+         ON role_access_metrics(user_id, evaluated_at DESC)`);
+      createIndexIfMissing(db, "idx_ram_access_granted",
+        `CREATE INDEX IF NOT EXISTS idx_ram_access_granted
+         ON role_access_metrics(access_granted, evaluated_at DESC)`);
+      createIndexIfMissing(db, "idx_ram_boundary_crossing",
+        `CREATE INDEX IF NOT EXISTS idx_ram_boundary_crossing
+         ON role_access_metrics(is_boundary_crossing, evaluated_at DESC)`);
+      createIndexIfMissing(db, "idx_ram_tenant_violation",
+        `CREATE INDEX IF NOT EXISTS idx_ram_tenant_violation
+         ON role_access_metrics(is_tenant_violation, evaluated_at DESC)`);
+      createIndexIfMissing(db, "idx_ram_resource_method",
+        `CREATE INDEX IF NOT EXISTS idx_ram_resource_method
+         ON role_access_metrics(requested_resource, requested_method, evaluated_at DESC)`);
+      createIndexIfMissing(db, "idx_ram_evaluated_at",
+        `CREATE INDEX IF NOT EXISTS idx_ram_evaluated_at
+         ON role_access_metrics(evaluated_at DESC)`);
+    },
+  },
+
+  // ── 019 ── Phase 12: plane_session_log ───────────────────────────────────
+  {
+    version: 19,
+    description: "Create plane_session_log for session-level plane tracking",
+    up(db) {
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS plane_session_log (
+          id                 TEXT    PRIMARY KEY,
+          user_id            TEXT    NOT NULL,
+          username           TEXT    NOT NULL,
+          control_plane      TEXT    NOT NULL,
+          plane_role         TEXT    NOT NULL,
+          tenant_id          TEXT,
+          jwt_jti            TEXT,
+          total_requests     INTEGER NOT NULL DEFAULT 0,
+          granted_requests   INTEGER NOT NULL DEFAULT 0,
+          denied_requests    INTEGER NOT NULL DEFAULT 0,
+          boundary_crossings INTEGER NOT NULL DEFAULT 0,
+          session_start      TEXT    NOT NULL,
+          session_end        TEXT,
+          last_seen_at       TEXT    NOT NULL
+        )
+      `).run();
+
+      createIndexIfMissing(db, "idx_psl_user_id",
+        `CREATE INDEX IF NOT EXISTS idx_psl_user_id
+         ON plane_session_log(user_id, session_start DESC)`);
+      createIndexIfMissing(db, "idx_psl_plane",
+        `CREATE INDEX IF NOT EXISTS idx_psl_plane
+         ON plane_session_log(control_plane, session_start DESC)`);
+    },
+  },
+
+  // ── 020 ── Phase 12: backfill plane assignments for legacy users ─────────
+  {
+    version: 20,
+    description: "Seed default plane assignments for existing users based on legacy role",
+    up(db) {
+      // Inlined intentionally: this is the historical record of how legacy
+      // users were mapped at the time of the v20 backfill. The runtime
+      // constant in phase12_roles.ts may evolve; this snapshot must not.
+      const LEGACY_ROLE_PLANE_MAP: Record<
+        string,
+        { plane: string; plane_role: string }
+      > = {
+        Executive: { plane: "client", plane_role: "client_super_admin" },
+        Auditor:   { plane: "client", plane_role: "client_auditor"     },
+        Partner:   { plane: "client", plane_role: "client_partner"     },
+      };
+
+      const users = db.prepare(
+        "SELECT id, role, tenant_id FROM users WHERE plane_assigned_at IS NULL"
+      ).all() as { id: string; role: string; tenant_id: string }[];
+
+      const now = new Date().toISOString();
+      const updateStmt = db.prepare(`
+        UPDATE users SET
+          control_plane      = ?,
+          plane_role         = ?,
+          plane_tenant_scope = ?,
+          plane_assigned_at  = ?
+        WHERE id = ?
+      `);
+
+      for (const user of users) {
+        const mapping = LEGACY_ROLE_PLANE_MAP[user.role] ??
+          { plane: "client", plane_role: "client_partner" };
+        updateStmt.run(
+          mapping.plane,
+          mapping.plane_role,
+          mapping.plane === "client" ? user.tenant_id : null,
+          now,
+          user.id
+        );
+      }
+
+      console.log(`[migrate] v20 seeded plane assignments for ${users.length} existing users.`);
+    },
+  },
+
+  // ── 021 ── Phase 12: covering indexes for access-metrics dashboards ──────
+  {
+    version: 21,
+    description: "Add covering indexes for role_access_metrics dashboard aggregation queries",
+    up(db) {
+      createIndexIfMissing(
+        db, "idx_ram_intrusion_covering",
+        `CREATE INDEX IF NOT EXISTS idx_ram_intrusion_covering
+         ON role_access_metrics(access_granted, is_boundary_crossing, is_tenant_violation, evaluated_at DESC, user_id)`
+      );
+      createIndexIfMissing(
+        db, "idx_ram_user_denial_covering",
+        `CREATE INDEX IF NOT EXISTS idx_ram_user_denial_covering
+         ON role_access_metrics(user_id, access_granted, evaluated_at DESC)
+         WHERE access_granted = 0`
+      );
+      db.prepare("ANALYZE").run();
+    },
+  },
+
+  // ── 022+ ── Phase 15 Commercial Activation (v22–v26) ────────────────────────
+  // Spread from src/db/migrations/phase15_commercial_activation.ts so the
+  // canonical runner remains the single source of truth. See yesterday's
+  // unification work for why this pattern matters.
+  ...PHASE15_MIGRATIONS,
+
 ];
 
 // ─── Migration Runner ─────────────────────────────────────────────────────────
@@ -884,6 +1138,11 @@ export function openDatabase(
   db.pragma("temp_store = MEMORY");
   db.pragma("mmap_size = 268435456");
   db.pragma("cache_size = -16000");
+
+  // One-shot reconciliation for the legacy v31–v35 → v17–v21 renumbering of
+  // the Phase-12 role migrations. No-op on fresh and fully-reconciled DBs.
+  // Safe to remove once all environments are confirmed reconciled.
+  reconcilePhase12Renumber(db);
 
   const result = runMigrations(db);
 
