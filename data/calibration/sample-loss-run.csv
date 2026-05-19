@@ -1,0 +1,37 @@
+policy_year,vessel_class,exposure_value,exposure_unit,claim_count,severity_total,premium_earned
+2020,Container Ship,95000,GT,0,0,1450000
+2020,Container Ship,98000,GT,1,425000,1580000
+2020,Container Ship,102000,GT,0,0,1610000
+2020,Container Ship,87000,GT,2,890000,1390000
+2020,Container Ship,110000,GT,0,0,1720000
+2021,Container Ship,96000,GT,1,512000,1490000
+2021,Container Ship,99000,GT,0,0,1560000
+2021,Container Ship,103000,GT,1,378000,1640000
+2021,Container Ship,88000,GT,0,0,1420000
+2021,Container Ship,108000,GT,3,1240000,1700000
+2022,Container Ship,97000,GT,0,0,1510000
+2022,Container Ship,100000,GT,1,490000,1590000
+2022,Container Ship,104000,GT,0,0,1660000
+2022,Container Ship,89000,GT,1,310000,1440000
+2022,Container Ship,107000,GT,2,820000,1690000
+2023,Container Ship,98000,GT,1,455000,1530000
+2023,Container Ship,101000,GT,0,0,1610000
+2023,Container Ship,105000,GT,0,0,1680000
+2023,Container Ship,90000,GT,0,0,1460000
+2023,Container Ship,109000,GT,1,395000,1730000
+2020,Tugboat - Harbor,310,GT,0,0,89000
+2020,Tugboat - Harbor,340,GT,1,175000,95000
+2020,Tugboat - Harbor,295,GT,0,0,84000
+2020,Tugboat - Harbor,325,GT,0,0,91000
+2021,Tugboat - Harbor,315,GT,2,420000,90000
+2021,Tugboat - Harbor,345,GT,0,0,97000
+2021,Tugboat - Harbor,300,GT,1,210000,86000
+2021,Tugboat - Harbor,330,GT,0,0,93000
+2022,Tugboat - Harbor,320,GT,0,0,91000
+2022,Tugboat - Harbor,350,GT,1,285000,99000
+2022,Tugboat - Harbor,305,GT,0,0,87000
+2022,Tugboat - Harbor,335,GT,2,510000,95000
+2023,Tugboat - Harbor,325,GT,0,0,93000
+2023,Tugboat - Harbor,355,GT,0,0,101000
+2023,Tugboat - Harbor,310,GT,1,195000,88000
+2023,Tugboat - Harbor,340,GT,0,0,97000
