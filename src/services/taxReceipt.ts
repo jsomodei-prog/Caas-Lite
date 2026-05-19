@@ -347,7 +347,8 @@ async function generateBulkWHTStatementPDF(
       doc.text(new Date(p.payout_date).toLocaleDateString(), 50, y);
       doc.text(p.agent_name.slice(0, 14), 120, y);
       doc.text(`${p.local_currency} ${(p.local_amount + p.withholding_tax_local).toLocaleString(undefined,{maximumFractionDigits:0})}`, 190, y);
-      doc.text(`${p.local_currency} ${p.withholding_tax_local.toLocaleString(undefined,{maximumFractionDigits:0})}`, 270, y, { fillColor: "#ef4444" });
+      doc.fillColor("#ef4444");
+      doc.text(`${p.local_currency} ${p.withholding_tax_local.toLocaleString(undefined,{maximumFractionDigits:0})}`, 270, y);
       doc.fillColor("#e2e8f0");
       doc.text(`${p.local_currency} ${p.net_disbursed_local.toLocaleString(undefined,{maximumFractionDigits:0})}`, 350, y);
       doc.text((p.provider_reference ?? "Pending").slice(0, 12), 430, y);
