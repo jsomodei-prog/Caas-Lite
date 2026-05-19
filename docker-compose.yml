@@ -1,0 +1,72 @@
+# docker-compose.yml
+#
+# CaaS-Lite production deployment template.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in real values.
+#   2. docker compose up -d
+#
+# To rotate BADGE_HMAC_SECRET:
+#   See docs/SECRET_ROTATION.md for the full procedure.
+#
+# Two notes worth knowing:
+#   - The `data:` volume holds the SQLite DB. Don't `docker compose down -v`
+#     in production unless you mean to wipe the database.
+#   - The container respects SIGTERM for graceful shutdown (the recompute
+#     scheduler unrefs its timer; in-flight HTTP requests complete).
+
+version: "3.8"
+
+services:
+  caas-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: caas-lite:latest
+    container_name: caas-api
+    restart: unless-stopped
+
+    # All secrets and config flow via env files. Never inline secrets in
+    # this file — it gets committed to git.
+    env_file:
+      - .env
+
+    # SQLite DB persists in this volume across container restarts.
+    volumes:
+      - caas-data:/data
+      - caas-receipts:/app/data/receipts
+
+    ports:
+      - "${PORT:-3000}:3000"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz", "||", "exit", "1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Modest resource caps. Adjust to your actual load.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+
+    # Read-only root FS where possible. The DB volume is writable; the
+    # rest of the container shouldn't need writes during normal operation.
+    read_only: false  # set true once you've verified nothing writes outside volumes
+    tmpfs:
+      - /tmp
+
+    # Don't run as root. Adjust UID/GID to match your host user if you
+    # need to manage the data volume by hand from outside the container.
+    user: "1000:1000"
+
+volumes:
+  caas-data:
+    driver: local
+  caas-receipts:
+    driver: local
