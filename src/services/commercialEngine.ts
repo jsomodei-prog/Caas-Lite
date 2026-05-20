@@ -278,8 +278,38 @@ export const TIER_CONFIG: Record<SubscriptionTier, {
 };
 
 const TAX_RATE          = 0.075;   // 7.5% VAT / service tax
-const HMAC_SECRET       = process.env.PAYOUT_HMAC_SECRET ?? "dev_hmac_secret";
 const AUDIT_WINDOW_DAYS = 30;      // rolling window for risk metric collection
+
+/**
+ * Resolve the HMAC secret used by the commercial engine and every callsite
+ * that signs or verifies commercial-engine artifacts (invoices, tokens,
+ * underwriting snapshots, certificates).
+ *
+ * Behavior:
+ *   - If PAYOUT_HMAC_SECRET is set in the environment, use it.
+ *   - If it is NOT set and NODE_ENV === "production", THROW at module load
+ *     time. Production must never sign with a known-weak fallback.
+ *   - If it is NOT set and we are not in production (test / development /
+ *     unset NODE_ENV), fall back to the well-known dev secret. This keeps
+ *     `npm test` and local dev frictionless.
+ *
+ * Exported so src/routes/commercial.ts (and any future signing path) can
+ * use the same loader rather than re-implementing the fallback inline —
+ * which was the original CRIT-2 finding.
+ */
+export function loadHmacSecret(): string {
+  const secret = process.env.PAYOUT_HMAC_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "PAYOUT_HMAC_SECRET must be set in production. " +
+      "Refusing to start with the development fallback secret."
+    );
+  }
+  return "dev_hmac_secret";
+}
+
+const HMAC_SECRET = loadHmacSecret();
 
 // ─── HMAC Utilities ───────────────────────────────────────────────────────────
 

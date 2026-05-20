@@ -30,6 +30,7 @@ import crypto from "crypto";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken } from "./auth";
 import { syncBadge } from "../lib/badge-sync";
+import { commercialAuditLog } from "../lib/audit";
 
 // ─── Trigger Thresholds (TODO: calibrate against real pilot data) ─────────────
 
@@ -74,37 +75,55 @@ function getDb(req: Request): DB {
 }
 
 function getActorId(req: Request): string {
-  return (req as Request & { userId?: string }).userId ?? "system";
+  // requireAccessToken middleware sets caasUserId from JWT sub claim.
+  // Pre-CRIT-1 this helper read req.userId (a property never set), silently
+  // returning "system" for every authed request. Audit rows accumulated
+  // actor_user_id="system" entries. Fixed here so the CRIT-1 super-admin
+  // bypass can identify the caller correctly.
+  return (req as Request & { caasUserId?: string }).caasUserId ?? "system";
 }
 
 function getTenantId(req: Request): string {
-  return (req as Request & { tenantId?: string }).tenantId ?? "";
+  // requireAccessToken middleware sets caasTenantId from JWT tid claim.
+  // Pre-CRIT-1 this helper read req.tenantId (a property never set), silently
+  // returning "" for every authed request. The bug was latent because
+  // nothing important compared the value — listPolicies just produced an
+  // empty result set, and the audit log recorded tenant_id="" rows that
+  // no one noticed. CRIT-1's tenant ownership check broke the silence by
+  // depending on this returning the real tenant.
+  return (req as Request & { caasTenantId?: string }).caasTenantId ?? "";
+}
+
+/**
+ * Returns true if the request comes from a user with plane_role
+ * 'global_super_admin'. Used by the CRIT-1 (slice 6g) tenant ownership
+ * checks to allow super-admins to operate across tenants.
+ *
+ * Why this lookup lives here rather than reading off req:
+ *   The insurance router only uses requireAccessToken (no
+ *   requireBusinessPlane middleware), so the plane_role is not on req.
+ *   Adding requireBusinessPlane to the whole router would change auth
+ *   surface for non-super-admin tenant users who legitimately bind
+ *   their own policies. Doing the lookup here preserves both:
+ *     - non-super-admins are tenant-scoped (the CRIT-1 invariant)
+ *     - super-admins operate cross-tenant (the test fixtures' assumption,
+ *       and the consistent pattern with provisioning.ts)
+ *
+ * If the user ID isn't on req (because the helper bug above means
+ * "system" is returned in some legacy paths), the lookup returns false —
+ * safe failure.
+ */
+function isCallerSuperAdmin(req: Request, db: DB): boolean {
+  const userId = (req as Request & { caasUserId?: string }).caasUserId;
+  if (!userId) return false;
+  const row = db
+    .prepare("SELECT plane_role FROM users WHERE id = ?")
+    .get(userId) as { plane_role: string | null } | undefined;
+  return row?.plane_role === "global_super_admin";
 }
 
 function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
-}
-
-function commercialAuditLog(
-  db: DB,
-  tenantId: string,
-  actorUserId: string | null,
-  entityId: string,
-  action: string,
-  oldValue: string | null,
-  newValue: string | null,
-  metadata: Record<string, unknown> = {}
-): void {
-  db.prepare(`
-    INSERT INTO commercial_audit_log
-      (id, tenant_id, actor_user_id, entity_type, entity_id,
-       action, old_value, new_value, metadata, created_at)
-    VALUES (?, ?, ?, 'warranty', ?, ?, ?, ?, ?, ?)
-  `).run(
-    crypto.randomUUID(), tenantId, actorUserId, entityId, action,
-    oldValue, newValue, JSON.stringify(metadata),
-    new Date().toISOString()
-  );
 }
 
 // ─── Core: Policy State Recomputation ─────────────────────────────────────────
@@ -208,17 +227,18 @@ function applyStateTransition(
   }
 
   const now = new Date().toISOString();
+  // Slice 6g HIGH-1: defense-in-depth tenant scope on the UPDATE.
   db.prepare(`
     UPDATE ai_insurance_warranties
        SET policy_state         = ?,
            state_evidence_json  = ?,
            state_changed_at     = ?,
            updated_at           = ?
-     WHERE id = ?
-  `).run(newState, JSON.stringify(evidence), now, now, warranty.id);
+     WHERE id = ? AND tenant_id = ?
+  `).run(newState, JSON.stringify(evidence), now, now, warranty.id, warranty.tenant_id);
 
   commercialAuditLog(
-    db, warranty.tenant_id, actorUserId, warranty.id, "state_change",
+    db, warranty.tenant_id, actorUserId, "warranty", warranty.id, "state_change",
     warranty.policy_state, newState,
     { evidence }
   );
@@ -253,6 +273,7 @@ async function listPolicies(req: Request, res: Response): Promise<void> {
 
 async function getPolicy(req: Request, res: Response): Promise<void> {
   const db = getDb(req);
+  const callerTenantId = getTenantId(req);
   const id = String(req.params.id);
 
   const row = db.prepare(`
@@ -260,6 +281,17 @@ async function getPolicy(req: Request, res: Response): Promise<void> {
   `).get(id) as WarrantyRow | undefined;
 
   if (!row) { res.status(404).json({ error: "Policy not found" }); return; }
+
+  // Tenant ownership check — without this, any caller can read any
+  // policy by UUID across tenant boundaries. Slice 6g found CRIT-1 on
+  // the mutation routes; this is the same gap on the read route.
+  // Super-admins bypass — same pattern as the mutation handlers below.
+  // 404 (not 403) avoids confirming the resource exists in another tenant.
+  if (row.tenant_id !== callerTenantId && !isCallerSuperAdmin(req, db)) {
+    res.status(404).json({ error: "Policy not found" });
+    return;
+  }
+
   res.json(row);
 }
 
@@ -270,6 +302,7 @@ async function getPolicy(req: Request, res: Response): Promise<void> {
 async function bindPolicy(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
+  const callerTenantId = getTenantId(req);
   const { account_id, coverage_ends_at } = req.body as {
     account_id?:       string;
     coverage_ends_at?: string;
@@ -284,6 +317,16 @@ async function bindPolicy(req: Request, res: Response): Promise<void> {
     .prepare("SELECT id, tenant_id FROM accounts WHERE id = ?")
     .get(account_id) as { id: string; tenant_id: string } | undefined;
   if (!account) { res.status(404).json({ error: "Account not found" }); return; }
+
+  // CRIT-1 (slice 6g): tenant ownership check.
+  // The caller may only bind policies on accounts that belong to their tenant.
+  // Super-admins bypass — they operate across tenants by design, consistent
+  // with provisioning.ts which uses requireBusinessPlane(["global_super_admin"]).
+  // Return 404 (not 403) to avoid confirming the account exists in another tenant.
+  if (account.tenant_id !== callerTenantId && !isCallerSuperAdmin(req, db)) {
+    res.status(404).json({ error: "Account not found" });
+    return;
+  }
 
   const id  = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -304,12 +347,12 @@ async function bindPolicy(req: Request, res: Response): Promise<void> {
     // Sync badge to reflect the now-bound ACTIVE policy. Idempotent —
     // if account creation already seeded green, this is a no-op.
     syncBadge(db, account.tenant_id, account.id, { policy_state: "ACTIVE" });
-  })();
 
-  commercialAuditLog(
-    db, account.tenant_id, actorId, id, "bind", null, "ACTIVE",
-    { account_id, coverage_ends_at }
-  );
+    commercialAuditLog(
+      db, account.tenant_id, actorId, "warranty", id, "bind", null, "ACTIVE",
+      { account_id, coverage_ends_at }
+    );
+  })();
 
   res.status(201).json({
     id,
@@ -328,12 +371,23 @@ async function bindPolicy(req: Request, res: Response): Promise<void> {
 async function recomputePolicy(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
+  const callerTenantId = getTenantId(req);
   const id      = String(req.params.id);
 
   const warranty = db
     .prepare("SELECT * FROM ai_insurance_warranties WHERE id = ?")
     .get(id) as WarrantyRow | undefined;
   if (!warranty) { res.status(404).json({ error: "Policy not found" }); return; }
+
+  // CRIT-1 (slice 6g): tenant ownership check.
+  // Without this, a caller from tenant A could trigger a recompute against
+  // tenant B's policy, writing an audit row attributed to tenant A and
+  // potentially flipping the badge on tenant B's account.
+  // Super-admins bypass — see bindPolicy for the rationale.
+  if (warranty.tenant_id !== callerTenantId && !isCallerSuperAdmin(req, db)) {
+    res.status(404).json({ error: "Policy not found" });
+    return;
+  }
 
   // Recompute + apply + badge sync run atomically. The badge sync is
   // unconditional — even when applyStateTransition is a no-op, the
@@ -367,6 +421,7 @@ async function recomputePolicy(req: Request, res: Response): Promise<void> {
 async function attachExternal(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
+  const callerTenantId = getTenantId(req);
   const id      = String(req.params.id);
   const { external_carrier_id, external_policy_number } = req.body as {
     external_carrier_id?:    string;
@@ -382,30 +437,47 @@ async function attachExternal(req: Request, res: Response): Promise<void> {
     } | undefined;
   if (!warranty) { res.status(404).json({ error: "Policy not found" }); return; }
 
-  const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE ai_insurance_warranties
-       SET external_carrier_id    = ?,
-           external_policy_number = ?,
-           updated_at             = ?
-     WHERE id = ?
-  `).run(
-    external_carrier_id    ?? warranty.external_carrier_id,
-    external_policy_number ?? warranty.external_policy_number,
-    now, id
-  );
+  // CRIT-1 (slice 6g): tenant ownership check.
+  // Without this, a caller from tenant A could overwrite tenant B's
+  // external carrier ID and policy number — direct data corruption visible
+  // to tenant B with no record of cross-tenant origin in the row itself.
+  // Super-admins bypass — see bindPolicy for the rationale.
+  if (warranty.tenant_id !== callerTenantId && !isCallerSuperAdmin(req, db)) {
+    res.status(404).json({ error: "Policy not found" });
+    return;
+  }
 
-  commercialAuditLog(
-    db, warranty.tenant_id, actorId, id, "external_attach",
-    JSON.stringify({
-      carrier: warranty.external_carrier_id,
-      policy:  warranty.external_policy_number,
-    }),
-    JSON.stringify({
-      carrier: external_carrier_id    ?? warranty.external_carrier_id,
-      policy:  external_policy_number ?? warranty.external_policy_number,
-    })
-  );
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    // Slice 6g HIGH-1: defense-in-depth tenant scope on the UPDATE.
+    // CRIT-1 (above) already gates on warranty.tenant_id matching the
+    // caller. This adds tenant_id to the UPDATE's WHERE so the mutation
+    // can never touch a row from a different tenant even if the CRIT-1
+    // check is ever bypassed by a future refactor.
+    db.prepare(`
+      UPDATE ai_insurance_warranties
+         SET external_carrier_id    = ?,
+             external_policy_number = ?,
+             updated_at             = ?
+       WHERE id = ? AND tenant_id = ?
+    `).run(
+      external_carrier_id    ?? warranty.external_carrier_id,
+      external_policy_number ?? warranty.external_policy_number,
+      now, id, warranty.tenant_id
+    );
+
+    commercialAuditLog(
+      db, warranty.tenant_id, actorId, "warranty", id, "external_attach",
+      JSON.stringify({
+        carrier: warranty.external_carrier_id,
+        policy:  warranty.external_policy_number,
+      }),
+      JSON.stringify({
+        carrier: external_carrier_id    ?? warranty.external_carrier_id,
+        policy:  external_policy_number ?? warranty.external_policy_number,
+      })
+    );
+  })();
 
   res.json({ id, updated_at: now });
 }

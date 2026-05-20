@@ -1,0 +1,103 @@
+# .gitattributes — Line-ending normalization for caas-lite-v1
+#
+# Why this file exists.
+# Without explicit rules, Git's behavior depends on the value of
+# `core.autocrlf` in each developer's local config. That means:
+#
+#   - macOS/Linux devs (autocrlf=input or false) get LF in working tree
+#   - Windows devs (autocrlf=true) get CRLF in working tree, LF in repo
+#   - A Windows dev whose autocrlf got reset can accidentally commit CRLFs
+#     into the repository, which then shows up as a meaningless full-file
+#     diff for every other developer.
+#
+# This file makes the rules explicit per-extension, removing the dependency
+# on local config.
+#
+# General policy:
+#   - Source files (.ts, .js, .json, .md, .yml, .sql, .sh, etc.) → LF in repo,
+#     LF in working tree. Cross-platform tooling (Node, Jest, ts-node,
+#     better-sqlite3, etc.) all handle LF correctly on Windows.
+#   - Windows-specific scripts (.bat, .cmd, .ps1) → CRLF, since Windows
+#     command interpreters can be picky about line endings.
+#   - Binary files → no conversion, ever.
+
+# Default: any file Git detects as text gets normalized to LF in the repo.
+# This is the safety net for any file extension not listed below.
+* text=auto eol=lf
+
+# ─── Source code ─────────────────────────────────────────────────────────────
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+*.scss      text eol=lf
+
+# ─── Database / data ─────────────────────────────────────────────────────────
+*.sql       text eol=lf
+*.csv       text eol=lf
+
+# ─── Shell + scripting ───────────────────────────────────────────────────────
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# Windows scripts must keep CRLF — cmd.exe and powershell.exe rely on it.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# ─── Config files ────────────────────────────────────────────────────────────
+.gitignore        text eol=lf
+.gitattributes    text eol=lf
+.editorconfig     text eol=lf
+.eslintrc*        text eol=lf
+.prettierrc*      text eol=lf
+*.env             text eol=lf
+*.env.*           text eol=lf
+
+# package files
+package.json        text eol=lf
+package-lock.json   text eol=lf
+tsconfig*.json      text eol=lf
+jest.config.*       text eol=lf
+
+# ─── Documentation ───────────────────────────────────────────────────────────
+LICENSE     text eol=lf
+README*     text eol=lf
+CHANGELOG*  text eol=lf
+
+# ─── Binaries: never convert ─────────────────────────────────────────────────
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.tar       binary
+*.tgz       binary
+*.7z        binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.otf       binary
+*.db        binary
+*.sqlite    binary
+*.sqlite3   binary
+
+# After committing this file, run:
+#   git add --renormalize .
+#   git commit -m "chore: normalize line endings via .gitattributes"
+#
+# That one-time renormalization aligns the repo with these rules. Without
+# it, existing CRLF blobs in the repo stay until each file is touched.

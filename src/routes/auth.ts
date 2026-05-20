@@ -12,6 +12,7 @@ import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import type { Database as DB } from "better-sqlite3";
 import { detectFailedAuthBurst } from "../analytics/anomaly";
+import { auditLog } from "../lib/audit";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -565,12 +566,28 @@ async function changePassword(req: AuthedRequest, res: Response): Promise<void> 
   }
 
   const newHash = await argon2.hash(new_password, ARGON2_OPTIONS);
-  db.prepare(
-    "UPDATE users SET password_hash = ?, failed_attempts = 0, updated_at = ? WHERE id = ?"
-  ).run(newHash, new Date().toISOString(), userId);
+  const tenantId = req.caasTenantId ?? "";
 
-  // Revoke all outstanding refresh tokens on password change.
-  revokeAllUserRefreshTokens(db, userId);
+  // Atomic: hash update + audit row + token revocation. If any fails,
+  // none commit — prevents the "password changed but no audit / tokens
+  // still valid" partial-failure scenario.
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE users SET password_hash = ?, failed_attempts = 0, updated_at = ? WHERE id = ?"
+    ).run(newHash, new Date().toISOString(), userId);
+
+    // Slice 6b: audit the password change. Records actor=target (self-service
+    // mutation), action='password_change', no old/new values (we never log
+    // password material). The audit row is the proof-of-rotation if the
+    // user later disputes "I never changed my password".
+    auditLog(
+      db, tenantId, userId, userId, "password_change",
+      null, null, null
+    );
+
+    // Revoke all outstanding refresh tokens on password change.
+    revokeAllUserRefreshTokens(db, userId);
+  })();
 
   res.status(200).json({ message: "Password updated successfully. Please log in again." });
 }

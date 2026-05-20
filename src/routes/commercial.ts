@@ -24,8 +24,9 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import crypto from "crypto";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken }  from "./auth";
-import { CommercialEngine, type SubscriptionTier, type CoverageType } from "../services/commercialEngine";
+import { CommercialEngine, loadHmacSecret, type SubscriptionTier, type CoverageType } from "../services/commercialEngine";
 import type { CaaSRole } from "./auth";
+import { commercialAuditLog } from "../lib/audit";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,17 @@ function getTenantId(req: Request): string {
 
 function getEngine(req: Request): CommercialEngine {
   return new CommercialEngine(getDb(req));
+}
+
+/**
+ * Reads the authenticated user's id off the request. requireAccessToken
+ * middleware sets req.caasUserId from the JWT sub claim. Returns null
+ * (not "system") so commercial_audit_log.actor_user_id is recorded NULL
+ * if the caller is somehow unauthenticated — matches the column's
+ * nullable semantics for system-triggered events.
+ */
+function getActorId(req: Request): string | null {
+  return (req as Request & { caasUserId?: string }).caasUserId ?? null;
 }
 
 // ─── Role Guard ───────────────────────────────────────────────────────────────
@@ -114,7 +126,7 @@ async function getInvoiceSummary(req: Request, res: Response): Promise<void> {
 
     // Verify invoice signature to confirm tamper-evidence
     const expectedSig = (() => {
-      const HMAC_SECRET = process.env.PAYOUT_HMAC_SECRET ?? "dev_hmac_secret";
+      const HMAC_SECRET = loadHmacSecret();
       return crypto
         .createHmac("sha256", HMAC_SECRET)
         .update(`${ledger.invoice_number}|${ledger.total_usd}|${ledger.period_start}|${ledger.period_end}|${ledger.status}`)
@@ -218,7 +230,29 @@ async function generateInvoice(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const engine   = getEngine(req);
 
-  const fxRate         = parseFloat((req.body as { fx_rate?: string }).fx_rate ?? "1.0") || 1.0;
+  // Slice 6g HIGH-3: fx_rate validation.
+  // Previous form `parseFloat(...) || 1.0` had two bugs:
+  //   1. parseFloat("0") || 1.0 evaluates to 1.0 because 0 is falsy.
+  //      A legitimate zero-rate input would be silently overwritten.
+  //   2. Negative rates and NaN passed through silently when paired with
+  //      the OR fallback only catching NaN. We never want a negative
+  //      multiplier on an invoice — it would flip totals to refunds.
+  // Fix: explicit NaN + positivity check, 400 on bad input. Only default
+  // when fx_rate is omitted entirely (the documented optional case).
+  const fxRateRaw = (req.body as { fx_rate?: string }).fx_rate;
+  let fxRate: number;
+  if (fxRateRaw === undefined || fxRateRaw === null) {
+    fxRate = 1.0;
+  } else {
+    const parsed = parseFloat(fxRateRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      res.status(400).json({
+        error: "fx_rate must be a positive finite number when present",
+      });
+      return;
+    }
+    fxRate = parsed;
+  }
   const invoiceCurrency = (req.body as { invoice_currency?: string }).invoice_currency ?? "USD";
 
   const result = engine.generateInvoice(tenantId, fxRate, invoiceCurrency);
@@ -266,7 +300,7 @@ async function getInsuranceCertificate(req: Request, res: Response): Promise<voi
   const activeTokens = engine.getActiveTokens(tenantId);
 
   // Compute a certificate digest: SHA-256 over key policy fields
-  const HMAC_SECRET = process.env.PAYOUT_HMAC_SECRET ?? "dev_hmac_secret";
+  const HMAC_SECRET = loadHmacSecret();
   const certificateDigest = crypto
     .createHmac("sha256", HMAC_SECRET)
     .update([
@@ -465,6 +499,33 @@ async function registerPolicy(req: Request, res: Response): Promise<void> {
     jurisdiction:         body.jurisdiction,
   });
 
+  // Slice 6b.4: audit policy registration. CommercialEngine.registerPolicy
+  // writes the insurance_underwriting_registry row but not commercial_audit_log
+  // — the engine uses HMAC tamper-evidence on the registry row itself for
+  // integrity. That covers state integrity but not actor attribution.
+  // This audit row closes the actor-attribution gap.
+  // NOTE: not inside the engine's transaction — same residual atomicity
+  // gap as regulatoryIngest /onboard. Acceptable: registration is rare,
+  // and the audit failure window is microseconds.
+  commercialAuditLog(
+    getDb(req), tenantId, getActorId(req),
+    "insurance_policy", String(registry.id),
+    "register",
+    null,
+    JSON.stringify({
+      carrier_id:    body.carrier_id,
+      policy_number: body.policy_number,
+      coverage_type: body.coverage_type,
+      risk_band:     registry.risk_band,
+    }),
+    {
+      coverage_limit_usd:       Number(body.coverage_limit_usd),
+      base_annual_premium_usd:  Number(body.base_annual_premium_usd),
+      policy_start_date:        body.policy_start_date,
+      policy_end_date:          body.policy_end_date,
+    }
+  );
+
   res.status(201).json({
     message:        "Insurance policy registered successfully",
     registry_id:    registry.id,
@@ -606,6 +667,24 @@ async function applyToken(req: Request, res: Response): Promise<void> {
   if (ledger.tenant_id !== tenantId) { res.status(403).json({ error: "Invoice belongs to different tenant" }); return; }
 
   const updated = engine.applyPremiumReductionToken(ledger_id, token_id);
+
+  // Slice 6b.5: audit token application. Token redemption changes an
+  // invoice's total — without this, "who applied which discount and when"
+  // is invisible. The engine's HMAC tamper-evidence on the ledger row
+  // proves no row was edited outside the engine, but doesn't say WHO.
+  commercialAuditLog(
+    getDb(req), tenantId, getActorId(req),
+    "premium_reduction_token", token_id,
+    "apply",
+    null,
+    JSON.stringify({
+      ledger_id,
+      invoice_number: updated.invoice_number,
+      new_total_usd:  updated.total_usd,
+      discount_usd:   updated.premium_discount_usd,
+    }),
+    { invoice_id: updated.id }
+  );
 
   res.json({
     message:        "Token applied successfully",

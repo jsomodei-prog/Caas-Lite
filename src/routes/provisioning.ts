@@ -26,6 +26,7 @@ import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken } from "./auth";
 import { syncBadge } from "../lib/badge-sync";
 import { requireBusinessPlane } from "../middleware/dualPlaneAuth";
+import { commercialAuditLog } from "../lib/audit";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,35 +85,7 @@ function generateApiKey(): { raw: string; hash: string; prefix: string } {
   return { raw, hash, prefix };
 }
 
-function commercialAuditLog(
-  db: DB,
-  tenantId: string,
-  actorUserId: string | null,
-  entityType: string,
-  entityId: string,
-  action: string,
-  oldValue: string | null,
-  newValue: string | null,
-  metadata: Record<string, unknown> = {}
-): void {
-  db.prepare(`
-    INSERT INTO commercial_audit_log
-      (id, tenant_id, actor_user_id, entity_type, entity_id,
-       action, old_value, new_value, metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    crypto.randomUUID(),
-    tenantId,
-    actorUserId,
-    entityType,
-    entityId,
-    action,
-    oldValue,
-    newValue,
-    JSON.stringify(metadata),
-    new Date().toISOString()
-  );
-}
+
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -176,13 +149,13 @@ async function createAccount(req: Request, res: Response): Promise<void> {
     // is null — syncBadge interprets that as "good standing by default".
     const sync = syncBadge(db, body.tenant_id, accountId, { policy_state: null });
     badgeSignature = sync.signature;
-  })();
 
-  commercialAuditLog(
-    db, body.tenant_id, actorId, "account", accountId, "create",
-    null, JSON.stringify({ tier, status: "pilot" }),
-    { api_key_prefix: apiKey.prefix, pilot_days: pilotDays }
-  );
+    commercialAuditLog(
+      db, body.tenant_id, actorId, "account", accountId, "create",
+      null, JSON.stringify({ tier, status: "pilot" }),
+      { api_key_prefix: apiKey.prefix, pilot_days: pilotDays }
+    );
+  })();
 
   res.status(201).json({
     id:               accountId,
@@ -247,12 +220,21 @@ async function changeTier(req: Request, res: Response): Promise<void> {
   }
 
   const now = new Date().toISOString();
-  db.prepare("UPDATE accounts SET tier = ?, updated_at = ? WHERE id = ?").run(tier, now, id);
+  db.transaction(() => {
+    // Slice 6g HIGH-1: defense-in-depth tenant scope on the UPDATE.
+    // Uses tenant_id from the SELECT above, ensuring the UPDATE only
+    // touches a row matching both id AND that tenant. id is a UUID
+    // (unique by schema) so this is paranoid, but harmless and consistent
+    // with the pattern in users.ts:assignRole.
+    db.prepare(
+      "UPDATE accounts SET tier = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    ).run(tier, now, id, current.tenant_id);
 
-  commercialAuditLog(
-    db, current.tenant_id, actorId, "account", id, "tier_change",
-    current.tier, tier
-  );
+    commercialAuditLog(
+      db, current.tenant_id, actorId, "account", id, "tier_change",
+      current.tier, tier
+    );
+  })();
 
   res.json({ id, tier, previous_tier: current.tier, changed_at: now });
 }
@@ -274,19 +256,22 @@ async function rotateApiKey(req: Request, res: Response): Promise<void> {
   const apiKey = generateApiKey();
   const now    = new Date().toISOString();
 
-  db.prepare(`
-    UPDATE accounts
-       SET api_key_hash       = ?,
-           api_key_prefix     = ?,
-           api_key_rotated_at = ?,
-           updated_at         = ?
-     WHERE id = ?
-  `).run(apiKey.hash, apiKey.prefix, now, now, id);
+  db.transaction(() => {
+    // Slice 6g HIGH-1: defense-in-depth tenant scope on the UPDATE.
+    db.prepare(`
+      UPDATE accounts
+         SET api_key_hash       = ?,
+             api_key_prefix     = ?,
+             api_key_rotated_at = ?,
+             updated_at         = ?
+       WHERE id = ? AND tenant_id = ?
+    `).run(apiKey.hash, apiKey.prefix, now, now, id, current.tenant_id);
 
-  commercialAuditLog(
-    db, current.tenant_id, actorId, "account", id, "key_rotation",
-    current.api_key_prefix, apiKey.prefix
-  );
+    commercialAuditLog(
+      db, current.tenant_id, actorId, "account", id, "key_rotation",
+      current.api_key_prefix, apiKey.prefix
+    );
+  })();
 
   res.status(200).json({
     id,

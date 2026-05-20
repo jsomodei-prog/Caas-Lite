@@ -42,6 +42,7 @@ import { Router, type Request, type Response } from "express";
 import type { Database as DB } from "better-sqlite3";
 
 import { requireGlobalSuperAdmin } from "../middleware/dualPlaneAuth";
+import { commercialAuditLog } from "../lib/audit";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -679,6 +680,27 @@ export function createRegulatoryIngestRouter(db: DB): Router {
       `rules=${payload.field_rules.length}, purposes=${(payload.consent_purposes ?? []).length})`
     );
 
+    // Slice 6b: audit the framework onboarding. Regulatory frameworks are
+    // global (not tenant-scoped), so we use tenant_id='_global' as the
+    // canonical marker for "this audit row applies to a system-wide action."
+    // NOTE: residual atomicity gap — insertFrameworkTx and this audit are
+    // not in the same transaction. If the audit insert fails after the
+    // framework row commits, we'd have an unaudited framework. Acceptable
+    // for now (framework onboarding is rare; failure window microseconds);
+    // flagged for a follow-up that pushes the audit call inside
+    // insertFrameworkTx as a callback.
+    commercialAuditLog(
+      db, "_global", actorId, "regulatory_framework", String(frameworkId),
+      "onboard", null, payload.framework_code,
+      {
+        framework_name: payload.framework_name,
+        region_code:    payload.region_code,
+        version:        payload.version,
+        rules:          payload.field_rules.length,
+        purposes:       (payload.consent_purposes ?? []).length,
+      }
+    );
+
     res.status(201).json({
       framework_id:          frameworkId,
       framework_code:        payload.framework_code,
@@ -815,7 +837,8 @@ export function createRegulatoryIngestRouter(db: DB): Router {
       return;
     }
 
-    const existing = stmts.findByCode.get(code);
+    const existing = stmts.findByCode.get(code) as
+      { id: number; is_active: number; metadata: string; [k: string]: unknown } | undefined;
     if (!existing) {
       res.status(404).json({ error: "FRAMEWORK_NOT_FOUND" });
       return;
@@ -846,6 +869,26 @@ export function createRegulatoryIngestRouter(db: DB): Router {
     }
 
     const updated = stmts.findByCode.get(code) as { metadata: string; [k: string]: unknown };
+
+    // Slice 6b: audit framework toggle/update. is_active is the security-critical
+    // field — flipping it to false silently disables downstream compliance checks
+    // for that framework. The audit row is the only forensic trail of "who turned
+    // it off and when". Records both is_active and metadata transitions when
+    // either changed; null values indicate no change for that field.
+    const actorId = req.dualPlanePrincipal?.user_id ?? null;
+    commercialAuditLog(
+      db, "_global", actorId, "regulatory_framework", String(existing.id),
+      "update",
+      JSON.stringify({
+        is_active: is_active !== undefined ? Boolean(existing.is_active) : null,
+        metadata:  metadata  !== undefined ? safeJsonParse(existing.metadata, {}) : null,
+      }),
+      JSON.stringify({
+        is_active: is_active !== undefined ? is_active : null,
+        metadata:  metadata  !== undefined ? metadata  : null,
+      }),
+      { framework_code: code, db_changes: info.changes }
+    );
 
     console.info(
       `[regulatoryIngest] Framework updated: ${code} ` +

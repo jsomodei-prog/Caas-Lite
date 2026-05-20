@@ -26,6 +26,7 @@ import Database from "better-sqlite3";
 import type { Database as DB } from "better-sqlite3";
 import path from "path";
 import { PHASE15_MIGRATIONS } from "./migrations/phase15_commercial_activation";
+import { PHASE11_USERS_AUDIT_MIGRATIONS } from "./migrations/phase11_users_audit";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -953,11 +954,18 @@ const MIGRATIONS: Migration[] = [
     },
   },
 
-  // ── 022+ ── Phase 15 Commercial Activation (v22–v26) ────────────────────────
+  // ── 022+ ── Phase 15 Commercial Activation (v22–v27) ────────────────────────
   // Spread from src/db/migrations/phase15_commercial_activation.ts so the
   // canonical runner remains the single source of truth. See yesterday's
   // unification work for why this pattern matters.
   ...PHASE15_MIGRATIONS,
+
+  // ── 028 ── Phase 11 user_profiles + role_audit_log schema promotion (slice 6d) ─
+  // Promotes the user_profiles and role_audit_log table DDL from inline
+  // ensureUserProfileTable() in src/routes/users.ts to canonical migrations.
+  // Both CREATE statements are IF NOT EXISTS — safe against existing DBs
+  // that were previously seeded by the inline DDL on first user-router boot.
+  ...PHASE11_USERS_AUDIT_MIGRATIONS,
 
 ];
 

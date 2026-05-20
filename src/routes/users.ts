@@ -25,6 +25,7 @@ import { requireAccessToken } from "./auth";
 import { getCountryRequirement, meetsKycRequirement } from "../config/countryRequirements";
 import type { KycTier, CountryRequirement } from "../config/countryRequirements";
 import type { CaaSRole } from "./auth";
+import { auditLog } from "../lib/audit";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,66 +114,6 @@ const ROLE_PERMISSIONS: Record<CaaSRole, Set<string>> = {
   Auditor:   new Set(["read:all", "view:reports", "read:anomalies", "read:payouts"]),
   Partner:   new Set(["read:own", "view:own_payouts", "manage:own_profile"]),
 };
-
-// ─── DB Bootstrap ─────────────────────────────────────────────────────────────
-
-function ensureUserProfileTable(db: DB): void {
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS user_profiles (
-      user_id            TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      tenant_id          TEXT NOT NULL,
-      display_name       TEXT,
-      phone              TEXT,
-      country_code       TEXT,
-      preferred_currency TEXT,
-      kyc_tier           TEXT NOT NULL DEFAULT 'basic',
-      profile_status     TEXT NOT NULL DEFAULT 'active',
-      is_freelancer      INTEGER NOT NULL DEFAULT 0,
-      agent_id           TEXT REFERENCES agents(id),
-      bio                TEXT,
-      api_key_hash       TEXT,
-      api_key_prefix     TEXT,
-      mfa_enabled        INTEGER NOT NULL DEFAULT 0,
-      created_at         TEXT NOT NULL,
-      updated_at         TEXT NOT NULL
-    )
-  `).run();
-
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS role_audit_log (
-      id              TEXT PRIMARY KEY,
-      tenant_id       TEXT NOT NULL,
-      target_user_id  TEXT NOT NULL,
-      actor_user_id   TEXT NOT NULL,
-      action          TEXT NOT NULL,
-      old_value       TEXT,
-      new_value       TEXT,
-      reason          TEXT,
-      created_at      TEXT NOT NULL
-    )
-  `).run();
-
-  db.prepare(`CREATE INDEX IF NOT EXISTS idx_role_audit_tenant ON role_audit_log(tenant_id, created_at DESC)`).run();
-  db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_profiles_tenant ON user_profiles(tenant_id)`).run();
-}
-
-// ─── Audit Log ─────────────────────────────────────────────────────────────────
-
-function auditLog(
-  db: DB,
-  tenantId: string,
-  targetUserId: string,
-  actorUserId: string,
-  action: string,
-  oldValue: string | null,
-  newValue: string | null,
-  reason: string | null = null
-): void {
-  db.prepare(`
-    INSERT INTO role_audit_log (id, tenant_id, target_user_id, actor_user_id, action, old_value, new_value, reason, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(crypto.randomUUID(), tenantId, targetUserId, actorUserId, action, oldValue, newValue, reason, new Date().toISOString());
-}
 
 // ─── Permission Tests ─────────────────────────────────────────────────────────
 
@@ -270,7 +211,6 @@ async function listUsers(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
 
-  ensureUserProfileTable(db);
 
   const users = db.prepare(`
     SELECT u.id, u.username, u.email, u.role, u.locked, u.last_login_at, u.created_at,
@@ -294,7 +234,6 @@ async function getUser(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const userId   = String(req.params.userId);
 
-  ensureUserProfileTable(db);
 
   const user = db.prepare(`
     SELECT u.id, u.username, u.email, u.role, u.locked, u.locked_until,
@@ -322,7 +261,6 @@ async function upsertProfile(req: Request, res: Response): Promise<void> {
   const userId   = String(req.params.userId);
   const actorId  = getActorId(req);
 
-  ensureUserProfileTable(db);
 
   const {
     display_name, phone, country_code, preferred_currency,
@@ -352,35 +290,40 @@ async function upsertProfile(req: Request, res: Response): Promise<void> {
     .get(userId, tenantId);
 
   if (existing) {
-    db.prepare(`
-      UPDATE user_profiles SET
-        display_name       = COALESCE(@display_name, display_name),
-        phone              = COALESCE(@phone, phone),
-        country_code       = COALESCE(@country_code, country_code),
-        preferred_currency = COALESCE(@preferred_currency, preferred_currency),
-        bio                = COALESCE(@bio, bio),
-        kyc_tier           = COALESCE(@kyc_tier, kyc_tier),
-        profile_status     = COALESCE(@profile_status, profile_status),
-        updated_at         = @now
-      WHERE user_id = @user_id AND tenant_id = @tenant_id
-    `).run({ display_name, phone, country_code, preferred_currency, bio, kyc_tier, profile_status, now, user_id: userId, tenant_id: tenantId });
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE user_profiles SET
+          display_name       = COALESCE(@display_name, display_name),
+          phone              = COALESCE(@phone, phone),
+          country_code       = COALESCE(@country_code, country_code),
+          preferred_currency = COALESCE(@preferred_currency, preferred_currency),
+          bio                = COALESCE(@bio, bio),
+          kyc_tier           = COALESCE(@kyc_tier, kyc_tier),
+          profile_status     = COALESCE(@profile_status, profile_status),
+          updated_at         = @now
+        WHERE user_id = @user_id AND tenant_id = @tenant_id
+      `).run({ display_name, phone, country_code, preferred_currency, bio, kyc_tier, profile_status, now, user_id: userId, tenant_id: tenantId });
+      auditLog(db, tenantId, userId, actorId, "profile_update", null, JSON.stringify({ display_name, country_code, kyc_tier }));
+    })();
   } else {
-    db.prepare(`
-      INSERT INTO user_profiles
-        (user_id, tenant_id, display_name, phone, country_code, preferred_currency,
-         kyc_tier, profile_status, bio, created_at, updated_at)
-      VALUES (@user_id, @tenant_id, @display_name, @phone, @country_code, @preferred_currency,
-              @kyc_tier, @profile_status, @bio, @now, @now)
-    `).run({
-      user_id: userId, tenant_id: tenantId,
-      display_name: display_name ?? null, phone: phone ?? null,
-      country_code: country_code ?? null, preferred_currency: preferred_currency ?? null,
-      kyc_tier: kyc_tier ?? "basic", profile_status: profile_status ?? "active",
-      bio: bio ?? null, now,
-    });
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO user_profiles
+          (user_id, tenant_id, display_name, phone, country_code, preferred_currency,
+           kyc_tier, profile_status, bio, created_at, updated_at)
+        VALUES (@user_id, @tenant_id, @display_name, @phone, @country_code, @preferred_currency,
+                @kyc_tier, @profile_status, @bio, @now, @now)
+      `).run({
+        user_id: userId, tenant_id: tenantId,
+        display_name: display_name ?? null, phone: phone ?? null,
+        country_code: country_code ?? null, preferred_currency: preferred_currency ?? null,
+        kyc_tier: kyc_tier ?? "basic", profile_status: profile_status ?? "active",
+        bio: bio ?? null, now,
+      });
+      auditLog(db, tenantId, userId, actorId, "profile_update", null, JSON.stringify({ display_name, country_code, kyc_tier }));
+    })();
   }
 
-  auditLog(db, tenantId, userId, actorId, "profile_update", null, JSON.stringify({ display_name, country_code, kyc_tier }));
   res.json({ success: true, updated_at: now });
 }
 
@@ -410,10 +353,16 @@ async function assignRole(req: Request, res: Response): Promise<void> {
   if (user.role === role) { res.status(200).json({ message: "Role unchanged", role }); return; }
 
   const oldRole = user.role;
-  db.prepare("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
-    .run(role, new Date().toISOString(), userId);
-
-  auditLog(db, tenantId, userId, actorId, "role_change", oldRole, role, reason ?? null);
+  db.transaction(() => {
+    // Slice 6g HIGH-1: defense-in-depth tenant scope on the UPDATE.
+    // The SELECT above already scopes by tenant_id, but if that check
+    // is ever removed by a refactor, the UPDATE would silently mutate
+    // cross-tenant. Adding tenant_id to the WHERE clause makes the
+    // UPDATE itself fail safe.
+    db.prepare("UPDATE users SET role = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+      .run(role, new Date().toISOString(), userId, tenantId);
+    auditLog(db, tenantId, userId, actorId, "role_change", oldRole, role, reason ?? null);
+  })();
   res.json({ success: true, user_id: userId, old_role: oldRole, new_role: role });
 }
 
@@ -435,7 +384,6 @@ async function elevateKyc(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  ensureUserProfileTable(db);
 
   const profile = db
     .prepare("SELECT kyc_tier FROM user_profiles WHERE user_id = ? AND tenant_id = ?")
@@ -443,16 +391,18 @@ async function elevateKyc(req: Request, res: Response): Promise<void> {
 
   const oldTier = profile?.kyc_tier ?? "basic";
 
-  if (profile) {
-    db.prepare("UPDATE user_profiles SET kyc_tier = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?")
-      .run(kyc_tier, new Date().toISOString(), userId, tenantId);
-  }
+  db.transaction(() => {
+    if (profile) {
+      db.prepare("UPDATE user_profiles SET kyc_tier = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?")
+        .run(kyc_tier, new Date().toISOString(), userId, tenantId);
+    }
 
-  // Also update agent kyc_tier if this user is a freelancer
-  db.prepare("UPDATE agents SET kyc_tier = ? WHERE id = (SELECT agent_id FROM user_profiles WHERE user_id = ? AND tenant_id = ?)")
-    .run(kyc_tier, userId, tenantId);
+    // Also update agent kyc_tier if this user is a freelancer
+    db.prepare("UPDATE agents SET kyc_tier = ? WHERE id = (SELECT agent_id FROM user_profiles WHERE user_id = ? AND tenant_id = ?)")
+      .run(kyc_tier, userId, tenantId);
 
-  auditLog(db, tenantId, userId, actorId, "kyc_elevation", oldTier, kyc_tier, evidence_ref ?? null);
+    auditLog(db, tenantId, userId, actorId, "kyc_elevation", oldTier, kyc_tier, evidence_ref ?? null);
+  })();
   res.json({ success: true, user_id: userId, old_tier: oldTier, new_tier: kyc_tier });
 }
 
@@ -468,7 +418,6 @@ async function registerFreelancer(req: Request, res: Response): Promise<void> {
   const userId   = String(req.params.userId);
   const reg      = req.body as FreelancerRegistration;
 
-  ensureUserProfileTable(db);
 
   const user = db
     .prepare("SELECT id, username FROM users WHERE id = ? AND tenant_id = ?")
@@ -525,9 +474,9 @@ async function registerFreelancer(req: Request, res: Response): Promise<void> {
         preferred_currency = excluded.preferred_currency,
         updated_at = excluded.updated_at
     `).run(userId, tenantId, reg.display_name, reg.country_code, reg.preferred_currency, agentId, now, now);
-  })();
 
-  auditLog(db, tenantId, userId, actorId, "freelancer_registered", null, agentId, reg.country_code);
+    auditLog(db, tenantId, userId, actorId, "freelancer_registered", null, agentId, reg.country_code);
+  })();
 
   res.status(201).json({
     success:   true,
@@ -552,20 +501,21 @@ async function generateApiKey(req: Request, res: Response): Promise<void> {
   const actorId  = getActorId(req);
   const userId   = String(req.params.userId);
 
-  ensureUserProfileTable(db);
 
   const rawKey    = `caas_${crypto.randomBytes(32).toString("hex")}`;
   const prefix    = rawKey.slice(0, 12);
   const keyHash   = crypto.createHash("sha256").update(rawKey).digest("hex");
   const now       = new Date().toISOString();
 
-  db.prepare(`
-    INSERT INTO user_profiles (user_id, tenant_id, api_key_hash, api_key_prefix, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET api_key_hash = excluded.api_key_hash, api_key_prefix = excluded.api_key_prefix, updated_at = excluded.updated_at
-  `).run(userId, tenantId, keyHash, prefix, now, now);
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO user_profiles (user_id, tenant_id, api_key_hash, api_key_prefix, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET api_key_hash = excluded.api_key_hash, api_key_prefix = excluded.api_key_prefix, updated_at = excluded.updated_at
+    `).run(userId, tenantId, keyHash, prefix, now, now);
 
-  auditLog(db, tenantId, userId, actorId, "api_key_generated", null, prefix, null);
+    auditLog(db, tenantId, userId, actorId, "api_key_generated", null, prefix, null);
+  })();
 
   res.status(201).json({
     message:    "Store this key securely — it will not be shown again.",
@@ -585,7 +535,6 @@ async function testPermissions(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const userId   = String(req.params.userId);
 
-  ensureUserProfileTable(db);
 
   const row = db.prepare(`
     SELECT u.role, p.country_code, p.kyc_tier
@@ -615,7 +564,6 @@ async function getAuditLog(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const limit    = Math.min(parseInt((req.query.limit as string) ?? "100", 10), 500);
 
-  ensureUserProfileTable(db);
 
   const rows = db.prepare(
     "SELECT * FROM role_audit_log WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?"
