@@ -15,13 +15,113 @@
  * Multi-tenant isolation enforced on every query.
  *
  * Phase 11 build-out | Commit baseline: a4f5db6
+ *
+ * Phase 15 slice 7:
+ *   - UserParams / AuditLogQuery / UpsertProfileBody / AssignRoleBody /
+ *     ElevateKycBody / RegisterFreelancerBody schemas applied via validate()
+ *     middleware at mount time.
+ *   - UserParams is reused across 7 of 9 routes (GET /:userId, POST
+ *     /:userId/profile, POST /:userId/role, POST /:userId/kyc, POST
+ *     /:userId/freelancer, POST /:userId/api-key, GET
+ *     /:userId/permissions/test) per Appendix B of the slice 7 enumeration
+ *     doc — the most-reused schema in slice 7.
+ *   - Local validRoles constant in assignRole() removed (schema's z.enum
+ *     absorbs the membership check).
+ *   - Local validTiers constant in elevateKyc() removed (same reason).
+ *   - GET / and the runPermissionTests / ROLE_PERMISSIONS apparatus are
+ *     out of scope (no body/query/params reads on GET /; the permissions
+ *     test handler reads only :userId which is covered by UserParams).
+ *
+ * ⚠ HIGH-RISK CHANGE — vestigial body fields on /freelancer:
+ *   The legacy FreelancerRegistration interface declared `user_id` and
+ *   `tenant_id` as required body fields, but the handler reads neither
+ *   — userId comes from req.params, tenantId from the X-Tenant-ID header.
+ *   The two body fields were dead.
+ *
+ *   RegisterFreelancerBody OMITS them. With `.strict()`, callers that
+ *   include user_id/tenant_id in the body will now 400 instead of being
+ *   silently ignored. This exposes a latent inconsistency the doc
+ *   explicitly wants surfaced (Appendix C lists it as "drop unused
+ *   user_id/tenant_id body fields" hardening — applied here).
+ *
+ *   If any test fixture or production caller sends these fields, the
+ *   failure mode is a 400 with a clear "unrecognized keys" message. The
+ *   FIX in that case is to remove the fields from the caller; do NOT
+ *   loosen the schema to accept them, because the handler ignores them
+ *   anyway and accepting them risks the "which user_id wins, body or
+ *   URL" ambiguity that motivated dropping them.
+ *
+ *   SLICE 7.5 UPDATE: the FreelancerRegistration interface itself was
+ *   also cleaned up. The slice 7 version of this block said the
+ *   interface was "left untouched in this slice... slice 7.5 or later
+ *   can clean up the type." That cleanup is now done — the interface
+ *   no longer declares user_id / tenant_id. The failure mode for
+ *   TypeScript callers who construct `FreelancerRegistration` literals
+ *   with those fields is now a compile-time error rather than a runtime
+ *   400, which is strictly better (loud and early vs quiet and late).
+ *   See the comment block above the interface definition for the full
+ *   migration note.
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional — see enumeration doc):
+ *   - All 7 :userId routes: non-UUID userId previously hit the DB and
+ *     returned 404 → now 400 at the validation boundary. If any test
+ *     fixture uses "test-user-1" or similar, update the fixture; do not
+ *     loosen the schema.
+ *   - GET /audit-log: limit=<garbage> was parseInt→NaN→Math.min(NaN,500)=NaN
+ *     passed as SQL LIMIT (better-sqlite3 would reject) → now 400.
+ *   - POST /:userId/profile: country_code must be exactly 2 chars (ISO
+ *     3166-1 alpha-2). Previously any string was accepted then 422'd
+ *     downstream by getCountryRequirement; now 400 earlier. Same status
+ *     change for preferred_currency (must be exactly 3 chars).
+ *   - POST /:userId/role: missing/invalid role was 400 via inline guard
+ *     → still 400, now via z.enum. No observable change.
+ *   - POST /:userId/kyc: missing/invalid kyc_tier was 400 via inline guard
+ *     → still 400, now via z.enum. No observable change.
+ *   - POST /:userId/freelancer: vestigial body fields dropped — see
+ *     "HIGH-RISK CHANGE" above. Also: country_code length 2,
+ *     preferred_currency length 3, same caveats as upsertProfile.
+ *   - All bodies: unknown fields silently ignored → now 400 (.strict()).
+ *
+ * NO BEHAVIOR CHANGES for:
+ *   - X-Tenant-ID header handling via getTenantId() — preserved with its
+ *     pre-existing quirk of returning "unknown" if missing (different
+ *     from commercial.ts which throws 400; out of scope to reconcile).
+ *   - Country requirement 422 checks in upsertProfile (currency
+ *     acceptance) and registerFreelancer (payout-method-supported-in-
+ *     country) — semantic, retained.
+ *   - Duplicate-freelancer 409 short-circuit.
+ *   - Phone format — schema does NOT enforce E.164 despite the type
+ *     comment, matching current laxness. Flagged for product decision
+ *     (enumeration doc Appendix C).
+ *   - evidence_ref optionality on KYC elevation — current handler does
+ *     not require evidence; schema matches. Flagged for product decision.
+ *   - Cross-field "momo requires momo_number+provider" / "card requires
+ *     card_token" — not enforced by the schema. Current handler passes
+ *     `?? null` through; schema matches. Flagged for product decision.
+ *   - Slice 6g HIGH-1 tenant-scoped UPDATE in assignRole.
+ *   - The runPermissionTests / ROLE_PERMISSIONS test apparatus, the
+ *     permission drop test matrix, the KYC-vs-country tests.
+ *   - All auditLog writes (role_change, profile_update, kyc_elevation,
+ *     freelancer_registered, api_key_generated).
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green)
+ *   - grep -r validRoles src/ — must return no matches (function-local)
+ *   - grep -r validTiers src/ — must return no matches (function-local)
+ *   - ⚠ Check /freelancer test fixtures for body user_id/tenant_id fields.
+ *     If present, REMOVE them from the fixture (do not loosen schema).
+ *   - Verify test fixtures for /:userId routes use real UUIDs.
+ *   - Verify test fixtures use ISO 3166-1 alpha-2 country codes (2 chars)
+ *     and ISO 4217 currency codes (3 chars).
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import crypto  from "crypto";
 import argon2  from "argon2";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken } from "./auth";
+import { validate } from "../middleware/validate";
 import { getCountryRequirement, meetsKycRequirement } from "../config/countryRequirements";
 import type { KycTier, CountryRequirement } from "../config/countryRequirements";
 import type { CaaSRole } from "./auth";
@@ -60,9 +160,23 @@ export interface ExtendedProfile {
   updated_at: string;
 }
 
+/**
+ * Body shape for POST /api/v1/users/:userId/freelancer.
+ *
+ * Slice 7.5 cleanup: the legacy interface had `user_id: string` and
+ * `tenant_id: string` as required fields, but the handler reads neither
+ * — userId comes from req.params, tenantId from the X-Tenant-ID header.
+ * Slice 7's RegisterFreelancerBody schema rejects both fields at
+ * runtime via `.strict()`. The interface now matches that contract.
+ *
+ * If any TypeScript code outside this file was constructing a
+ * `FreelancerRegistration` literal with `user_id` / `tenant_id` set,
+ * the TypeScript compiler will now flag those literals — the fix is to
+ * drop the fields from the call site. That code would have hit a
+ * runtime 400 from `.strict()` anyway; the compiler is just surfacing
+ * the breakage earlier.
+ */
 export interface FreelancerRegistration {
-  user_id: string;
-  tenant_id: string;
   display_name: string;
   country_code: string;
   payout_method: "momo" | "card";
@@ -114,6 +228,143 @@ const ROLE_PERMISSIONS: Record<CaaSRole, Set<string>> = {
   Auditor:   new Set(["read:all", "view:reports", "read:anomalies", "read:payouts"]),
   Partner:   new Set(["read:own", "view:own_payouts", "manage:own_profile"]),
 };
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * Query schema for GET /audit-log.
+ *
+ * BEHAVIOR CHANGE: the legacy `Math.min(parseInt(garbage), 500)` produced
+ * NaN which better-sqlite3 would reject mid-query. Schema rejects with
+ * 400 at the boundary — cleaner failure mode.
+ */
+const AuditLogQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+}).strict();
+
+/**
+ * Params schema reused across 7 routes (the most-reused schema in slice 7):
+ *   GET /:userId, POST /:userId/profile, POST /:userId/role,
+ *   POST /:userId/kyc, POST /:userId/freelancer, POST /:userId/api-key,
+ *   GET /:userId/permissions/test.
+ *
+ * users.id is assigned via crypto.randomUUID() in src/routes/auth.ts
+ * register() handler, so UUID is correct. If the column migrates to a
+ * different ID scheme, loosen here AND in the enumeration doc's
+ * Appendix A AND verify all 7 mount points.
+ */
+const UserParams = z.object({
+  userId: z.string().uuid(),
+}).strict();
+
+/**
+ * Body schema for POST /:userId/profile.
+ *
+ * All fields optional — this is an upsert that COALESCEs against existing
+ * row values, so any subset (including empty body) is valid.
+ *
+ * BEHAVIOR CHANGES:
+ *   - country_code: enforced as exactly 2 chars (ISO 3166-1 alpha-2).
+ *     Was any string; getCountryRequirement would 422 invalid codes
+ *     downstream. Schema catches at 400 earlier — strict status change
+ *     but the alpha-2 form is unambiguous.
+ *   - preferred_currency: enforced as exactly 3 chars (ISO 4217). Same
+ *     caveat as commercial.ts; if any fixture uses non-standard codes,
+ *     loosen here AND in commercial.ts's two invoice_currency schemas
+ *     to keep behavior consistent.
+ *
+ * NOT enforced (intentional, per enumeration doc Appendix C):
+ *   - phone: no E.164 regex. Type comment says E.164 but the legacy
+ *     handler accepted any string. Tightening to `/^\+[1-9]\d{1,14}$/`
+ *     would be a behavior change; flagged for product decision.
+ *
+ * Inline checks RETAINED:
+ *   - getCountryRequirement throw → 422 with country error message.
+ *   - currency acceptance check against country.accepted_currencies → 422.
+ *   Both semantic; schema does not duplicate them.
+ */
+const UpsertProfileBody = z.object({
+  display_name:       z.string().min(1).optional(),
+  phone:              z.string().min(1).optional(),
+  country_code:       z.string().length(2).optional(),
+  preferred_currency: z.string().length(3).optional(),
+  bio:                z.string().optional(),
+  kyc_tier:           z.enum(["basic", "standard", "enhanced"]).optional(),
+  profile_status:     z.enum(["active", "suspended", "pending_kyc", "pending_review"]).optional(),
+}).strict();
+
+/**
+ * Body schema for POST /:userId/role.
+ *
+ * z.enum absorbs the legacy `validRoles.includes(role)` check; the
+ * local validRoles constant has been removed from assignRole(). The
+ * `reason` field is optional and passed to the audit log.
+ *
+ * Inline checks RETAINED:
+ *   - User existence (404).
+ *   - Same-role no-op 200 short-circuit.
+ *   - Slice 6g HIGH-1 defense-in-depth tenant-scoped UPDATE.
+ */
+const AssignRoleBody = z.object({
+  role:   z.enum(["Executive", "Auditor", "Partner"]),
+  reason: z.string().min(1).optional(),
+}).strict();
+
+/**
+ * Body schema for POST /:userId/kyc.
+ *
+ * z.enum absorbs the legacy validTiers check; the local validTiers
+ * constant has been removed from elevateKyc().
+ *
+ * NOT enforced (intentional, per enumeration doc):
+ *   - evidence_ref: optional. Real-world KYC elevation arguably should
+ *     require evidence, but the current handler passes `evidence_ref ?? null`
+ *     to the audit log. Schema matches current behavior. Flagged for
+ *     product hardening in Appendix C.
+ */
+const ElevateKycBody = z.object({
+  kyc_tier:     z.enum(["basic", "standard", "enhanced"]),
+  evidence_ref: z.string().min(1).optional(),
+}).strict();
+
+/**
+ * Body schema for POST /:userId/freelancer.
+ *
+ * ⚠ DELIBERATELY OMITS user_id and tenant_id that appear in the
+ * FreelancerRegistration interface — see the "HIGH-RISK CHANGE" section
+ * in the file header. The handler reads userId from req.params and
+ * tenantId from the X-Tenant-ID header; the body fields were vestigial.
+ *
+ * BEHAVIOR CHANGES:
+ *   - country_code: 2 chars (was any string).
+ *   - preferred_currency: 3 chars (was any string).
+ *   - payout_threshold_usd: coerced non-negative finite number (was
+ *     `number` in the type cast but no runtime check).
+ *   - Vestigial user_id/tenant_id in body now rejected by .strict().
+ *
+ * NOT enforced (intentional, per enumeration doc):
+ *   - Cross-field: `payout_method === "momo"` should require
+ *     `momo_number` + `momo_provider`; `payout_method === "card"` should
+ *     require `card_token`. Current handler passes `?? null` through;
+ *     schema matches. Could be `.refine()`. Flagged for product
+ *     hardening in Appendix C.
+ *
+ * Inline checks RETAINED:
+ *   - User existence (404).
+ *   - getCountryRequirement throw → 422.
+ *   - payout-method-supported-in-country check → 422.
+ *   - Duplicate-freelancer check (existing agent_id) → 409.
+ */
+const RegisterFreelancerBody = z.object({
+  display_name:         z.string().min(1),
+  country_code:         z.string().length(2),
+  payout_method:        z.enum(["momo", "card"]),
+  momo_number:          z.string().min(1).optional(),
+  momo_provider:        z.string().min(1).optional(),
+  card_token:           z.string().min(1).optional(),
+  payout_threshold_usd: z.coerce.number().nonnegative().finite(),
+  preferred_currency:   z.string().length(3),
+}).strict();
 
 // ─── Permission Tests ─────────────────────────────────────────────────────────
 
@@ -228,11 +479,14 @@ async function listUsers(req: Request, res: Response): Promise<void> {
 /**
  * GET /api/v1/users/:userId
  * Fetch a user's full profile. Executive/Auditor or self.
+ *
+ * After validate({ params: UserParams }), req.params.userId is a validated
+ * UUID string.
  */
 async function getUser(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
-  const userId   = String(req.params.userId);
+  const { userId } = req.params as z.infer<typeof UserParams>;
 
 
   const user = db.prepare(`
@@ -254,18 +508,29 @@ async function getUser(req: Request, res: Response): Promise<void> {
  * POST /api/v1/users/:userId/profile
  * Create or update extended profile fields.
  * Validates country data constraints.
+ *
+ * After validate({ params: UserParams, body: UpsertProfileBody }):
+ *   - userId is a validated UUID string.
+ *   - All body fields are optional with the appropriate format
+ *     constraints (country_code length 2, preferred_currency length 3,
+ *     kyc_tier and profile_status as enums).
+ *   - phone format is intentionally NOT enforced; see UpsertProfileBody
+ *     schema comment.
+ *
+ * The semantic country-requirement and currency-acceptance 422 checks
+ * stay inline — schema only validates shape.
  */
 async function upsertProfile(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
-  const userId   = String(req.params.userId);
+  const { userId } = req.params as z.infer<typeof UserParams>;
   const actorId  = getActorId(req);
 
 
   const {
     display_name, phone, country_code, preferred_currency,
     bio, kyc_tier, profile_status,
-  } = req.body as Partial<ExtendedProfile>;
+  } = req.body as z.infer<typeof UpsertProfileBody>;
 
   // Country constraint validation
   if (country_code) {
@@ -331,19 +596,19 @@ async function upsertProfile(req: Request, res: Response): Promise<void> {
  * POST /api/v1/users/:userId/role
  * Assign a new role to a user. Executive only.
  * Body: { role, reason }
+ *
+ * After validate({ params: UserParams, body: AssignRoleBody }):
+ *   - userId is a validated UUID string.
+ *   - role is one of the three CaaSRole enum values.
+ *   - reason is optional non-empty string.
+ *   - The local `validRoles` constant and inline membership check are gone.
  */
 async function assignRole(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
   const actorId  = getActorId(req);
-  const userId   = String(req.params.userId);
-  const { role, reason } = req.body as { role?: CaaSRole; reason?: string };
-
-  const validRoles: CaaSRole[] = ["Executive", "Auditor", "Partner"];
-  if (!role || !validRoles.includes(role)) {
-    res.status(400).json({ error: `role must be one of: ${validRoles.join(", ")}` });
-    return;
-  }
+  const { userId } = req.params as z.infer<typeof UserParams>;
+  const { role, reason } = req.body as z.infer<typeof AssignRoleBody>;
 
   const user = db
     .prepare("SELECT id, role FROM users WHERE id = ? AND tenant_id = ?")
@@ -370,19 +635,19 @@ async function assignRole(req: Request, res: Response): Promise<void> {
  * POST /api/v1/users/:userId/kyc
  * Elevate KYC tier. Executive only.
  * Body: { kyc_tier, evidence_ref }
+ *
+ * After validate({ params: UserParams, body: ElevateKycBody }):
+ *   - userId is a validated UUID string.
+ *   - kyc_tier is one of the three KycTier enum values.
+ *   - evidence_ref is optional (intentional — see ElevateKycBody comment).
+ *   - The local `validTiers` constant and inline membership check are gone.
  */
 async function elevateKyc(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
   const actorId  = getActorId(req);
-  const userId   = String(req.params.userId);
-  const { kyc_tier, evidence_ref } = req.body as { kyc_tier?: KycTier; evidence_ref?: string };
-
-  const validTiers: KycTier[] = ["basic", "standard", "enhanced"];
-  if (!kyc_tier || !validTiers.includes(kyc_tier)) {
-    res.status(400).json({ error: `kyc_tier must be one of: ${validTiers.join(", ")}` });
-    return;
-  }
+  const { userId } = req.params as z.infer<typeof UserParams>;
+  const { kyc_tier, evidence_ref } = req.body as z.infer<typeof ElevateKycBody>;
 
 
   const profile = db
@@ -410,13 +675,25 @@ async function elevateKyc(req: Request, res: Response): Promise<void> {
  * POST /api/v1/users/:userId/freelancer
  * Register a user as a freelancer and create their agent record.
  * Validates country requirements before creating.
+ *
+ * After validate({ params: UserParams, body: RegisterFreelancerBody }):
+ *   - userId is a validated UUID string.
+ *   - Body has display_name / country_code (2) / payout_method enum /
+ *     payout_threshold_usd (coerced non-negative finite) / preferred_currency
+ *     (3), with optional momo_number / momo_provider / card_token.
+ *   - ⚠ Body does NOT accept user_id / tenant_id (the vestigial fields).
+ *     If callers send them, .strict() returns 400. See header block
+ *     "HIGH-RISK CHANGE".
+ *
+ * The semantic country / payout-method / duplicate-freelancer checks
+ * (422/422/409) stay inline.
  */
 async function registerFreelancer(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
   const actorId  = getActorId(req);
-  const userId   = String(req.params.userId);
-  const reg      = req.body as FreelancerRegistration;
+  const { userId } = req.params as z.infer<typeof UserParams>;
+  const reg      = req.body as z.infer<typeof RegisterFreelancerBody>;
 
 
   const user = db
@@ -494,12 +771,14 @@ async function registerFreelancer(req: Request, res: Response): Promise<void> {
  * POST /api/v1/users/:userId/api-key
  * Generate a new API key for the user.
  * Returns the raw key once — it is hashed before storage.
+ *
+ * After validate({ params: UserParams }), userId is a validated UUID.
  */
 async function generateApiKey(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
   const actorId  = getActorId(req);
-  const userId   = String(req.params.userId);
+  const { userId } = req.params as z.infer<typeof UserParams>;
 
 
   const rawKey    = `caas_${crypto.randomBytes(32).toString("hex")}`;
@@ -529,11 +808,13 @@ async function generateApiKey(req: Request, res: Response): Promise<void> {
  * GET /api/v1/users/:userId/permissions/test
  * Runs the role assignment verification test block.
  * Confirms permission drops catch invalid access attempts.
+ *
+ * After validate({ params: UserParams }), userId is a validated UUID.
  */
 async function testPermissions(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
-  const userId   = String(req.params.userId);
+  const { userId } = req.params as z.infer<typeof UserParams>;
 
 
   const row = db.prepare(`
@@ -558,11 +839,15 @@ async function testPermissions(req: Request, res: Response): Promise<void> {
 /**
  * GET /api/v1/users/audit-log
  * Returns the role audit trail for the tenant.
+ *
+ * After validate({ query: AuditLogQuery }), limit is a clamped int
+ * (1..500) with default 100. The legacy `Math.min(parseInt(...), 500)`
+ * NaN footgun is absorbed.
  */
 async function getAuditLog(req: Request, res: Response): Promise<void> {
   const db       = getDb(req);
   const tenantId = getTenantId(req);
-  const limit    = Math.min(parseInt((req.query.limit as string) ?? "100", 10), 500);
+  const { limit } = req.query as unknown as z.infer<typeof AuditLogQuery>;
 
 
   const rows = db.prepare(
@@ -601,17 +886,39 @@ export function createUsersRouter(): Router {
   // All user routes require a valid access token.
   router.use(requireAccessToken);
 
-  router.get("/",                                    requireRole("Executive", "Auditor"), async_(listUsers));
-  router.get("/audit-log",                           requireRole("Executive", "Auditor"), async_(getAuditLog));
-  router.get("/:userId",                             async_(getUser));
-  router.post("/:userId/profile",                    async_(upsertProfile));
-  router.post("/:userId/role",                       requireRole("Executive"),            async_(assignRole));
-  router.post("/:userId/kyc",                        requireRole("Executive"),            async_(elevateKyc));
-  router.post("/:userId/freelancer",                 async_(registerFreelancer));
-  router.post("/:userId/api-key",                    async_(generateApiKey));
-  router.get("/:userId/permissions/test",            async_(testPermissions));
+  // UserParams is reused across 7 routes (the most-reused schema in slice 7).
+  // Factored into a const per the pov-billing.ts / provisioning.ts /
+  // insurance.ts pattern so the schema is wired identically at each mount
+  // point — easier to audit and harder to diverge accidentally.
+  const validateUserParams = validate({ params: UserParams });
+
+  // Ordering pattern (consistent with commercial.ts / provisioning.ts):
+  // requireAccessToken (router-level) → requireRole → validate → handler.
+  // requireRole runs before validate so an insufficient-role caller gets
+  // 403 instead of 400 — don't leak schema details to unauthorized callers.
+
+  router.get("/",                                    requireRole("Executive", "Auditor"),                                                              async_(listUsers));
+  router.get("/audit-log",                           requireRole("Executive", "Auditor"), validate({ query: AuditLogQuery }),                          async_(getAuditLog));
+  router.get("/:userId",                                                                  validateUserParams,                                          async_(getUser));
+  router.post("/:userId/profile",                                                         validate({ params: UserParams, body: UpsertProfileBody }),   async_(upsertProfile));
+  router.post("/:userId/role",                       requireRole("Executive"),            validate({ params: UserParams, body: AssignRoleBody }),      async_(assignRole));
+  router.post("/:userId/kyc",                        requireRole("Executive"),            validate({ params: UserParams, body: ElevateKycBody }),      async_(elevateKyc));
+  router.post("/:userId/freelancer",                                                      validate({ params: UserParams, body: RegisterFreelancerBody }), async_(registerFreelancer));
+  router.post("/:userId/api-key",                                                         validateUserParams,                                          async_(generateApiKey));
+  router.get("/:userId/permissions/test",                                                 validateUserParams,                                          async_(testPermissions));
 
   return router;
 }
+
+// Exported for tests that want to assert the schemas directly without
+// constructing an Express request.
+export {
+  UserParams,
+  AuditLogQuery,
+  UpsertProfileBody,
+  AssignRoleBody,
+  ElevateKycBody,
+  RegisterFreelancerBody,
+};
 
 export default createUsersRouter;

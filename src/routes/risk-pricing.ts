@@ -142,9 +142,12 @@ async function quote(req: Request, res: Response): Promise<void> {
       });
       return;
     }
-    // See QuoteBody.custom_config NOTE: we accept z.record(z.unknown()) and
-    // cast at the boundary. priceFromProfile validates the structure itself.
-    config = body.custom_config as VesselClassConfig;
+    // See QuoteBody.custom_config NOTE: schema accepts z.record(z.unknown()),
+    // so body.custom_config arrives as Record<string, unknown>. priceFromProfile
+    // validates the structural fields itself; we cast through `unknown` (the
+    // tsc-required two-step pattern for non-overlapping structured types) to
+    // acknowledge this is an unchecked widening at the type-system boundary.
+    config = body.custom_config as unknown as VesselClassConfig;
   } else {
     const found = VESSEL_CLASSES[body.vessel_class];
     if (!found) {

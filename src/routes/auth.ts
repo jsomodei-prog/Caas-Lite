@@ -3,14 +3,75 @@
  * Secure identity endpoints: registration, login, token refresh, and logout.
  * Uses Argon2id for password hashing and enforces brute-force lockout delays.
  * Commit baseline: a4f5db6  |  Phase 9 build-out
+ *
+ * Phase 15 slice 7:
+ *   - RegisterBody / LoginBody / RefreshBody / ChangePasswordBody schemas
+ *     applied via validate() middleware at mount time. Each schema is
+ *     single-use (no Appendix B reuse for auth routes).
+ *   - validatePasswordStrength() is RETAINED INLINE on /register and
+ *     /change-password — see "422 vs 400 contract" below.
+ *   - Local validRoles constant inside register() removed (the schema's
+ *     z.enum absorbs the membership check).
+ *
+ * 422 vs 400 contract (CRITICAL — do not unify into the schema):
+ *   /register and /change-password historically return:
+ *     - 400 for missing/malformed body shape (handled by validate())
+ *     - 422 for password policy violations (length, char classes, reuse)
+ *   Clients in the wild likely differentiate these two: 400 means
+ *   "fix your request envelope," 422 means "your password isn't strong
+ *   enough — show the user the policy message and let them try again."
+ *   Folding validatePasswordStrength() into a Zod refinement would
+ *   collapse both into 400, which is observable behavior change for
+ *   any client that branches on the status code. The enumeration doc
+ *   Appendix C explicitly flags this as "keep as inline post-schema
+ *   check to preserve 422 status."
+ *
+ *   The same applies to the same-password-reuse check on /change-password
+ *   (returns 422 "New password must differ from the current password").
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional):
+ *   - POST /register   email=<non-email>  was accepted → now 400
+ *     (RegisterBody.email enforces RFC email format).
+ *   - All four bodies: unknown top-level fields were silently ignored
+ *     → now 400 (`.strict()`). Most likely to bite /register if any
+ *     caller historically sent `roleId` (camelCase typo) instead of
+ *     `role`, or extra metadata fields.
+ *
+ * NO BEHAVIOR CHANGES for:
+ *   - Password policy responses (still 422 with the specific message
+ *     from validatePasswordStrength).
+ *   - Same-password-reuse response on /change-password (still 422).
+ *   - Constant-time user-existence handling on /login (dummy hash
+ *     verify on unknown username preserved verbatim).
+ *   - Soft/hard lockout state machine and 423 responses.
+ *   - Brute-force delay (applyBruteForceDelay) on all credential checks.
+ *   - detectFailedAuthBurst anomaly integration.
+ *   - Token issuance, rotation, refresh hashing, and revocation.
+ *   - Atomic transaction in changePassword (hash update + audit + token
+ *     revocation as one unit).
+ *   - auditLog write on password change (Slice 6b).
+ *   - requireAccessToken middleware (definition and behavior unchanged).
+ *   - /logout and /me (out of scope — no body/query/params reads).
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green)
+ *   - Specifically: any /register test that asserts 422 for password
+ *     policy violations must still get 422 (not 400). Same for
+ *     /change-password.
+ *   - grep -r validRoles src/ — must return no matches (the constant
+ *     was function-local).
+ *   - Verify /register test fixtures use real email format for the
+ *     `email` field. If any use placeholder strings like "test-user-1",
+ *     update the fixture.
  */
 
 import { Router, Request, Response, NextFunction } from "express";
+import { z } from "zod";
 import crypto from "crypto";
 import argon2 from "argon2";
 import jwt from "jsonwebtoken";
-import Database from "better-sqlite3";
 import type { Database as DB } from "better-sqlite3";
+import { validate } from "../middleware/validate";
 import { detectFailedAuthBurst } from "../analytics/anomaly";
 import { auditLog } from "../lib/audit";
 
@@ -100,6 +161,73 @@ const HARD_LOCKOUT_HOURS = 24;
 
 /** Sliding window for failed-auth-burst anomaly detection. */
 const BURST_WINDOW_MINUTES = 10;
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * Body schema for POST /auth/register.
+ *
+ * - email: BEHAVIOR CHANGE — schema enforces RFC email format. The legacy
+ *   handler accepted any non-empty string. If any test fixture uses a
+ *   placeholder like "test-user-1", update the fixture; do not loosen.
+ *
+ * - role: z.enum absorbs the legacy `validRoles.includes(role)` check.
+ *   The local `validRoles` constant has been removed from register().
+ *
+ * - password: schema only enforces non-emptiness. Strength policy
+ *   (length, char classes) stays in validatePasswordStrength() because
+ *   it returns 422, not 400. See header block "422 vs 400 contract."
+ */
+const RegisterBody = z.object({
+  username:  z.string().min(1),
+  email:     z.string().email(),
+  password:  z.string().min(1),
+  role:      z.enum(["Executive", "Auditor", "Partner"]),
+  tenant_id: z.string().min(1),
+}).strict();
+
+/**
+ * Body schema for POST /auth/login.
+ *
+ * All three fields are non-empty strings. No further validation — the
+ * constant-time user-existence check + lockout state + brute-force delay
+ * + argon2.verify pipeline downstream is the semantic gate. The schema
+ * here only guarantees shape.
+ */
+const LoginBody = z.object({
+  username:  z.string().min(1),
+  password:  z.string().min(1),
+  tenant_id: z.string().min(1),
+}).strict();
+
+/**
+ * Body schema for POST /auth/refresh.
+ *
+ * Deliberately loose: z.string().min(1) rather than a hex regex matching
+ * issueTokenPair's `crypto.randomBytes(64).toString("hex")` output. The
+ * token format is an implementation detail of issueTokenPair — tightening
+ * the schema would couple the two and break if issueTokenPair ever
+ * switches encoding. The 401 from the hash + DB lookup catches malformed
+ * values without leaking format information.
+ *
+ * Per enumeration doc NOTE for /refresh: leaving as .min(1) is intentional.
+ */
+const RefreshBody = z.object({
+  refresh_token: z.string().min(1),
+}).strict();
+
+/**
+ * Body schema for POST /auth/change-password.
+ *
+ * Same 422-vs-400 contract as /register: schema enforces shape only,
+ * validatePasswordStrength() runs inline and returns 422 for policy
+ * violations. The same-password-reuse check also returns 422 (semantic,
+ * argon2.verify-based — cannot be expressed in the schema anyway).
+ */
+const ChangePasswordBody = z.object({
+  current_password: z.string().min(1),
+  new_password:     z.string().min(1),
+}).strict();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -241,27 +369,22 @@ export function requireAccessToken(
  * POST /auth/register
  * Body: { username, email, password, role, tenant_id }
  * Restricted to Executive callers or service-to-service (internal API key).
+ *
+ * After validate({ body: RegisterBody }):
+ *   - All five fields are present and well-typed (email format enforced).
+ *   - role is one of the three CaaSRole enum values.
+ *   - The legacy presence guard and `validRoles.includes(role)` check
+ *     are absorbed by the schema.
+ *
+ * validatePasswordStrength runs AFTER the schema and returns 422 — see
+ * header block "422 vs 400 contract" for why this stays inline.
  */
 async function register(req: Request, res: Response): Promise<void> {
-  const { username, email, password, role, tenant_id } = req.body as {
-    username?: string;
-    email?: string;
-    password?: string;
-    role?: CaaSRole;
-    tenant_id?: string;
-  };
+  const { username, email, password, role, tenant_id } =
+    req.body as z.infer<typeof RegisterBody>;
 
-  if (!username || !email || !password || !role || !tenant_id) {
-    res.status(400).json({ error: "username, email, password, role, and tenant_id are required" });
-    return;
-  }
-
-  const validRoles: CaaSRole[] = ["Executive", "Auditor", "Partner"];
-  if (!validRoles.includes(role)) {
-    res.status(400).json({ error: `role must be one of: ${validRoles.join(", ")}` });
-    return;
-  }
-
+  // Password strength check stays inline — returns 422, not 400.
+  // See header block "422 vs 400 contract".
   const passwordError = validatePasswordStrength(password);
   if (passwordError) {
     res.status(422).json({ error: passwordError });
@@ -314,18 +437,18 @@ async function register(req: Request, res: Response): Promise<void> {
  * POST /auth/login
  * Body: { username, password, tenant_id }
  * Returns: { access_token, refresh_token, expires_in }
+ *
+ * After validate({ body: LoginBody }):
+ *   - All three fields are non-empty strings.
+ *   - The legacy presence guard is absorbed by the schema.
+ *
+ * Everything downstream (constant-time user lookup with dummy hash on
+ * unknown user, lockout state machine, brute-force delay, argon2.verify,
+ * detectFailedAuthBurst) is unchanged.
  */
 async function login(req: Request, res: Response): Promise<void> {
-  const { username, password, tenant_id } = req.body as {
-    username?: string;
-    password?: string;
-    tenant_id?: string;
-  };
-
-  if (!username || !password || !tenant_id) {
-    res.status(400).json({ error: "username, password, and tenant_id are required" });
-    return;
-  }
+  const { username, password, tenant_id } =
+    req.body as z.infer<typeof LoginBody>;
 
   const db = getDb(req);
 
@@ -420,13 +543,13 @@ async function login(req: Request, res: Response): Promise<void> {
  * POST /auth/refresh
  * Body: { refresh_token }
  * Returns: { access_token, refresh_token, expires_in } (token rotation)
+ *
+ * After validate({ body: RefreshBody }), refresh_token is a non-empty
+ * string. Format (e.g. 128-char hex) is NOT validated — see RefreshBody
+ * comment in the Schemas section.
  */
 async function refresh(req: Request, res: Response): Promise<void> {
-  const { refresh_token } = req.body as { refresh_token?: string };
-  if (!refresh_token) {
-    res.status(400).json({ error: "refresh_token is required" });
-    return;
-  }
+  const { refresh_token } = req.body as z.infer<typeof RefreshBody>;
 
   const db = getDb(req);
   const tokenHash = hashRefreshToken(refresh_token);
@@ -520,17 +643,21 @@ function me(req: AuthedRequest, res: Response): void {
  * POST /auth/change-password
  * Body: { current_password, new_password }
  * Requires a valid access token.
+ *
+ * After validate({ body: ChangePasswordBody }):
+ *   - Both fields are present and non-empty strings.
+ *   - The legacy presence guard is absorbed by the schema.
+ *
+ * validatePasswordStrength runs AFTER the schema and returns 422 — see
+ * header block "422 vs 400 contract" for why this stays inline.
+ * Same-password reuse check also returns 422 (semantic, post-argon2-verify).
  */
 async function changePassword(req: AuthedRequest, res: Response): Promise<void> {
-  const { current_password, new_password } = req.body as {
-    current_password?: string;
-    new_password?: string;
-  };
-  if (!current_password || !new_password) {
-    res.status(400).json({ error: "current_password and new_password are required" });
-    return;
-  }
+  const { current_password, new_password } =
+    req.body as z.infer<typeof ChangePasswordBody>;
 
+  // Password strength check stays inline — returns 422, not 400.
+  // See header block "422 vs 400 contract".
   const passwordError = validatePasswordStrength(new_password);
   if (passwordError) {
     res.status(422).json({ error: passwordError });
@@ -604,9 +731,18 @@ export function createAuthRouter(): Router {
       fn(req, res, next).catch(next);
     };
 
-  router.post("/register", asyncHandler(register));
-  router.post("/login", asyncHandler(login));
-  router.post("/refresh", asyncHandler(refresh));
+  // Each schema is single-use — no Appendix B reuse for auth routes.
+  // validate() is composed at mount time per-route, matching the pattern
+  // in pov-billing.ts / provisioning.ts / insurance.ts.
+  //
+  // For routes that ALSO require an authenticated caller (/change-password),
+  // requireAccessToken runs BEFORE validate so unauthenticated callers
+  // get 401, not 400. This mirrors the ordering in provisioning.ts where
+  // requireBusinessPlane runs before validate for the same reason: don't
+  // leak schema details to unauthorized callers.
+  router.post("/register", validate({ body: RegisterBody }), asyncHandler(register));
+  router.post("/login",    validate({ body: LoginBody }),    asyncHandler(login));
+  router.post("/refresh",  validate({ body: RefreshBody }),  asyncHandler(refresh));
   router.post("/logout", requireAccessToken, (req, res) =>
     logout(req as AuthedRequest, res)
   );
@@ -616,10 +752,15 @@ export function createAuthRouter(): Router {
   router.post(
     "/change-password",
     requireAccessToken,
+    validate({ body: ChangePasswordBody }),
     asyncHandler((req, res) => changePassword(req as AuthedRequest, res))
   );
 
   return router;
 }
+
+// Exported for tests that want to assert the schemas directly without
+// constructing an Express request.
+export { RegisterBody, LoginBody, RefreshBody, ChangePasswordBody };
 
 export default createAuthRouter;

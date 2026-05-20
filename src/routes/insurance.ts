@@ -20,15 +20,72 @@
  *   - role_access_metrics (Phase 12) for boundary crossings / denials
  *   - pilot_decisions (Phase 15 v26) for decision volume baseline
  *
+ * Phase 15 slice 7:
+ *   - PolicyParams / BindPolicyBody / AttachExternalBody schemas applied
+ *     via validate() middleware at mount time.
+ *   - PolicyParams is reused across GET /policies/:id, POST /policies/:id/recompute,
+ *     and PATCH /policies/:id/external per Appendix B of the slice 7
+ *     enumeration doc.
+ *   - GET /policies remains unschemed — tenant comes from JWT, no body/query/params.
+ *   - Legacy String(req.params.id) coercion removed from all three :id routes.
+ *
+ * CRITICAL: nothing in slice 7 changes the security posture of this file.
+ * Every CRIT-1 tenant ownership check, every slice 6g HIGH-1 tenant-scoped
+ * UPDATE, and the entire evaluatePolicyState → applyStateTransition →
+ * syncBadge chain is preserved verbatim. The schemas live at the
+ * validation boundary only.
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional — see enumeration doc):
+ *   - POST /policies   account_id=<non-uuid>    previously hit the DB and
+ *     returned 404 → now 400 at the validation boundary.
+ *   - POST /policies   coverage_ends_at=<malformed>  previously produced
+ *     an Invalid Date that silently propagated into the row → now 400.
+ *     The schema enforces RFC 3339 / ISO 8601 via z.string().datetime().
+ *     ⚠ HIGHEST-RISK ITEM IN THIS FILE: if any test fixture uses
+ *     `YYYY-MM-DD` (date-only) or a non-RFC3339 form, this will 400.
+ *     The enumeration doc flags this explicitly and recommends a custom
+ *     regex/.refine() as the fallback. Verify before merging.
+ *   - GET/POST recompute/PATCH external  :id=<non-uuid>  previously hit
+ *     the DB and returned 404 → now 400.
+ *   - POST /policies body: unknown top-level fields were silently ignored
+ *     → now 400 (.strict()). Same for PATCH /policies/:id/external.
+ *
+ * NO BEHAVIOR CHANGES for:
+ *   - CRIT-1 tenant ownership 404 (vs 403) for cross-tenant access on
+ *     getPolicy, bindPolicy, recomputePolicy, attachExternal.
+ *   - Super-admin bypass via isCallerSuperAdmin in all four mutation/read
+ *     gates.
+ *   - Slice 6g HIGH-1 defense-in-depth tenant-scoped UPDATEs in
+ *     applyStateTransition and attachExternal.
+ *   - PATCH /policies/:id/external with empty body (deliberately a no-op
+ *     per the enumeration doc NOTE; AttachExternalBody allows both
+ *     fields optional and does not require at-least-one).
+ *   - Atomic recompute transaction (evaluate + applyStateTransition +
+ *     syncBadge in one db.transaction).
+ *   - getActorId/getTenantId helpers and their bug-history comments
+ *     (these are institutional memory for the pre-CRIT-1 audit-row
+ *     corruption fix; do not delete).
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green)
+ *   - Specifically: any test that posts to /policies with coverage_ends_at,
+ *     verify the value is in RFC 3339 form (e.g. "2026-06-01T00:00:00Z",
+ *     not "2026-06-01"). If 400s appear there, this is the doc's flagged
+ *     risk — switch to a regex .refine() instead of loosening the schema.
+ *   - grep -r "evaluatePolicyState\|applyStateTransition" src/ — the
+ *     dual export contract for async job runners must still resolve.
+ *
  * TODO(phase15): the trigger thresholds at the top of this file are
  * placeholder values. Real product calibration involves baselining against
  * historical pilot data and is out of scope for the skeleton.
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import crypto from "crypto";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken } from "./auth";
+import { validate } from "../middleware/validate";
 import { syncBadge } from "../lib/badge-sync";
 import { commercialAuditLog } from "../lib/audit";
 
@@ -67,6 +124,59 @@ interface RecomputeResult {
   changed:         boolean;
   evidence:        Record<string, unknown>;
 }
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * Params schema reused across GET /policies/:id, POST /policies/:id/recompute,
+ * and PATCH /policies/:id/external (Appendix B of the slice 7 enumeration doc).
+ *
+ * ai_insurance_warranties.id is assigned via crypto.randomUUID() in
+ * bindPolicy below, so UUID is the correct format. If the column is ever
+ * migrated to a different ID scheme, loosen here AND in the enumeration
+ * doc's Appendix A.
+ */
+const PolicyParams = z.object({
+  id: z.string().uuid(),
+}).strict();
+
+/**
+ * Body schema for POST /api/v1/insurance/policies (bindPolicy).
+ *
+ * - account_id: BEHAVIOR CHANGE — was any non-empty string, now must be
+ *   a UUID. accounts.id is crypto.randomUUID()-assigned in provisioning.ts
+ *   so UUID is the correct format. If a test fixture used a non-UUID
+ *   account id, update the fixture; do not loosen the schema.
+ *
+ * - coverage_ends_at: BEHAVIOR CHANGE — was any string accepted into
+ *   `new Date(...)` (silently producing Invalid Date on garbage); now
+ *   z.string().datetime() enforces RFC 3339 / ISO 8601. ⚠ HIGHEST-RISK
+ *   ITEM IN THIS FILE — see header block. If fixtures use date-only
+ *   form (e.g. "2026-06-01"), switch this to a regex .refine() rather
+ *   than dropping the format check.
+ */
+const BindPolicyBody = z.object({
+  account_id:       z.string().uuid(),
+  coverage_ends_at: z.string().datetime().optional(),
+}).strict();
+
+/**
+ * Body schema for PATCH /api/v1/insurance/policies/:id/external (attachExternal).
+ *
+ * Both fields are optional with no at-least-one .refine() — matches the
+ * current handler, which uses `?? warranty.external_carrier_id` to no-op
+ * on missing values. PATCH-with-empty-body is therefore valid and produces
+ * a no-op UPDATE plus an audit row with identical before/after values.
+ *
+ * Appendix C lists "require at least one field" as a possible future
+ * hardening, NOT applied in slice 7. If reviewing this and tempted to
+ * add the refinement, check whether any caller relies on the silent
+ * no-op behavior first.
+ */
+const AttachExternalBody = z.object({
+  external_carrier_id:    z.string().min(1).optional(),
+  external_policy_number: z.string().min(1).optional(),
+}).strict();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -271,10 +381,14 @@ async function listPolicies(req: Request, res: Response): Promise<void> {
   res.json({ data: rows, total: (rows as unknown[]).length });
 }
 
+/**
+ * After validate({ params: PolicyParams }), req.params.id is a validated
+ * UUID string. The legacy String() wrap is unnecessary.
+ */
 async function getPolicy(req: Request, res: Response): Promise<void> {
   const db = getDb(req);
   const callerTenantId = getTenantId(req);
-  const id = String(req.params.id);
+  const { id } = req.params as z.infer<typeof PolicyParams>;
 
   const row = db.prepare(`
     SELECT * FROM ai_insurance_warranties WHERE id = ?
@@ -298,20 +412,17 @@ async function getPolicy(req: Request, res: Response): Promise<void> {
 /**
  * POST /api/v1/insurance/policies
  * Body: { account_id, coverage_ends_at? }
+ *
+ * After validate({ body: BindPolicyBody }):
+ *   - account_id is a validated UUID string
+ *   - coverage_ends_at, if present, is a validated RFC 3339 datetime string
+ *   - The legacy `if (!account_id)` guard is gone (the schema rejects).
  */
 async function bindPolicy(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
   const callerTenantId = getTenantId(req);
-  const { account_id, coverage_ends_at } = req.body as {
-    account_id?:       string;
-    coverage_ends_at?: string;
-  };
-
-  if (!account_id) {
-    res.status(400).json({ error: "account_id is required" });
-    return;
-  }
+  const { account_id, coverage_ends_at } = req.body as z.infer<typeof BindPolicyBody>;
 
   const account = db
     .prepare("SELECT id, tenant_id FROM accounts WHERE id = ?")
@@ -367,12 +478,15 @@ async function bindPolicy(req: Request, res: Response): Promise<void> {
 /**
  * POST /api/v1/insurance/policies/:id/recompute
  * Recompute policy state from current evidence. Idempotent.
+ *
+ * After validate({ params: PolicyParams }), req.params.id is a validated
+ * UUID string.
  */
 async function recomputePolicy(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
   const callerTenantId = getTenantId(req);
-  const id      = String(req.params.id);
+  const { id }  = req.params as z.infer<typeof PolicyParams>;
 
   const warranty = db
     .prepare("SELECT * FROM ai_insurance_warranties WHERE id = ?")
@@ -417,16 +531,20 @@ async function recomputePolicy(req: Request, res: Response): Promise<void> {
 /**
  * PATCH /api/v1/insurance/policies/:id/external
  * Body: { external_carrier_id?, external_policy_number? }
+ *
+ * After validate({ params: PolicyParams, body: AttachExternalBody }):
+ *   - req.params.id is a validated UUID string
+ *   - both body fields are optional non-empty strings if present
+ *   - empty body is allowed and produces a no-op UPDATE (intentional —
+ *     see AttachExternalBody comment in the Schemas section).
  */
 async function attachExternal(req: Request, res: Response): Promise<void> {
   const db      = getDb(req);
   const actorId = getActorId(req);
   const callerTenantId = getTenantId(req);
-  const id      = String(req.params.id);
-  const { external_carrier_id, external_policy_number } = req.body as {
-    external_carrier_id?:    string;
-    external_policy_number?: string;
-  };
+  const { id }  = req.params as z.infer<typeof PolicyParams>;
+  const { external_carrier_id, external_policy_number } =
+    req.body as z.infer<typeof AttachExternalBody>;
 
   const warranty = db
     .prepare("SELECT tenant_id, external_carrier_id, external_policy_number FROM ai_insurance_warranties WHERE id = ?")
@@ -493,11 +611,33 @@ export function createInsuranceRouter(): Router {
 
   router.use(requireAccessToken);
 
+  // PolicyParams is reused across 3 routes (GET, POST recompute, PATCH).
+  // Factored into a const per the pov-billing.ts / provisioning.ts pattern
+  // so the schema is wired identically at each mount point — easier to
+  // audit and harder to diverge accidentally.
+  const validatePolicyParams = validate({ params: PolicyParams });
+
   router.get("/policies",                       async_(listPolicies));
-  router.get("/policies/:id",                   async_(getPolicy));
-  router.post("/policies",                      async_(bindPolicy));
-  router.post("/policies/:id/recompute",        async_(recomputePolicy));
-  router.patch("/policies/:id/external",        async_(attachExternal));
+  router.get(
+    "/policies/:id",
+    validatePolicyParams,
+    async_(getPolicy),
+  );
+  router.post(
+    "/policies",
+    validate({ body: BindPolicyBody }),
+    async_(bindPolicy),
+  );
+  router.post(
+    "/policies/:id/recompute",
+    validatePolicyParams,
+    async_(recomputePolicy),
+  );
+  router.patch(
+    "/policies/:id/external",
+    validate({ params: PolicyParams, body: AttachExternalBody }),
+    async_(attachExternal),
+  );
 
   return router;
 }
@@ -505,5 +645,9 @@ export function createInsuranceRouter(): Router {
 // Re-export for tests and async job runners that need to drive state
 // transitions outside the HTTP layer.
 export { evaluatePolicyState, applyStateTransition };
+
+// Exported for tests that want to assert the schemas directly without
+// constructing an Express request.
+export { PolicyParams, BindPolicyBody, AttachExternalBody };
 
 export default createInsuranceRouter;

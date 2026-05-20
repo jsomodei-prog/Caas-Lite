@@ -22,6 +22,28 @@
  * the system (state transition handlers in the insurance route, the
  * badge management endpoint TODO'd below) can reuse it.
  *
+ * Phase 15 slice 7:
+ *   - tenantId param now validated via BadgeParams (z.string().min(1)) at
+ *     the validate() middleware boundary. Legacy String() coercion removed.
+ *   - sig query parameter is DELIBERATELY NOT validated by schema. See the
+ *     BadgeQuery comment below for the privacy rationale; the inline
+ *     `if (!presented)` 404 check is preserved verbatim.
+ *
+ * NO BEHAVIOR CHANGES in slice 7 for this route. The params schema accepts
+ * the same set of tenantId strings the route accepted before (any non-empty
+ * string), and the sig handling is untouched.
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green; the preflight test
+ *     at tests/preflight-validate.test.ts covers the validate() middleware)
+ *   - Manually verify: GET /api/v1/badge/<unknown-tenant>            → 404
+ *                      GET /api/v1/badge/<unknown-tenant>?sig=foo    → 404
+ *                      GET /api/v1/badge/<known-tenant>              → 404 (no sig)
+ *                      GET /api/v1/badge/<known-tenant>?sig=wrong    → 404
+ *     All four MUST return the same {error: "Not found"} body. Any
+ *     distinction between them is a privacy regression — see the
+ *     "Why BadgeQuery is not applied" note in the Schemas section.
+ *
  * TODO(phase15):
  *   - PATCH /api/v1/badge/:tenantId  internal endpoint to refresh state
  *     and resign. Called from the insurance recompute path.
@@ -30,13 +52,63 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import crypto from "crypto";
 import type { Database as DB } from "better-sqlite3";
+import { validate } from "../middleware/validate";
 import { signBadgeState, verifyBadgeSignature } from "../lib/badge-secrets";
 
 // Re-export signBadgeState so existing callers (badge-sync, tests) keep
 // working without an import-path change.
 export { signBadgeState };
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * tenantId here is the embedder-presented tenant identifier string, NOT a
+ * UUID — the trust_badge_registry is keyed on whatever tenant_id the embedder
+ * provides at provisioning time, and the dashboard surfaces that same string
+ * back to them. Using z.string().min(1) rather than z.uuid() to match current
+ * behavior; tightening to UUID would be a behavior change and is flagged in
+ * the slice 7 enumeration doc as NOT in scope.
+ */
+const BadgeParams = z.object({
+  tenantId: z.string().min(1),
+}).strict();
+
+/**
+ * Why BadgeQuery is NOT applied to this route
+ * ============================================
+ *
+ * The natural schema would be:
+ *
+ *   const BadgeQuery = z.object({
+ *     sig: z.string().min(1),
+ *   }).strict();
+ *
+ * Applied via validate({ params, query }), this would cause requests with
+ * a missing or empty `sig` parameter to return 400 instead of the current
+ * 404. That sounds like a normal correctness improvement, but it leaks
+ * information that the current handler deliberately conceals.
+ *
+ * The endpoint's auth model gives EVERY failure mode the same response
+ * (404 + "Not found"): unknown tenantId, known tenantId with wrong sig,
+ * known tenantId with missing sig, known tenantId with stale sig from a
+ * rotated-out secret. An attacker probing tenant existence cannot tell
+ * any of these apart. Applying a query schema would split "missing sig"
+ * off into 400, letting the attacker distinguish "the validator ran"
+ * (route exists, structure was checked) from "the validator was bypassed"
+ * (still 404 only for genuinely-unknown tenants in some future code path).
+ *
+ * The inline `if (!presented)` check below produces the same 404 for the
+ * missing-sig case as for every other failure, which is the property we
+ * want to preserve. Per the slice 7 enumeration doc Appendix C: "Do not
+ * apply BadgeQuery to this route. Validate params only."
+ *
+ * If a future slice wants to enforce sig presence at the schema layer
+ * AND preserve the 404 response shape, the right place is a custom
+ * validate() variant that maps query errors to 404, not BadgeQuery here.
+ */
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,8 +120,12 @@ function getDb(req: Request): DB {
 
 async function getBadgeState(req: Request, res: Response): Promise<void> {
   const db        = getDb(req);
-  const tenantId  = String(req.params.tenantId);
-  const presented = String(req.query.sig ?? "");
+  // After validate({ params: BadgeParams }), req.params.tenantId is a
+  // validated non-empty string. The legacy String() wrap is unnecessary.
+  // The query.sig handling is INTENTIONALLY untouched — see BadgeQuery
+  // note in the Schemas section for why this is not schema-validated.
+  const { tenantId } = req.params as z.infer<typeof BadgeParams>;
+  const presented    = String(req.query.sig ?? "");
 
   if (!presented) { res.status(404).json({ error: "Not found" }); return; }
 
@@ -117,7 +193,15 @@ export function createBadgeRouter(): Router {
       fn(req, res).catch(next);
 
   // No requireAccessToken — this endpoint is signature-gated, public-ish.
-  router.get("/:tenantId", async_(getBadgeState));
+  //
+  // validate({ params: BadgeParams }) only — query is INTENTIONALLY not
+  // schema-validated to preserve the 404-vs-400 privacy property. See
+  // the BadgeQuery comment in the Schemas section above.
+  router.get(
+    "/:tenantId",
+    validate({ params: BadgeParams }),
+    async_(getBadgeState),
+  );
 
   // Explicit OPTIONS handler so browser preflights succeed. The
   // permissiveCors middleware mounted at the app level has already set
@@ -127,5 +211,9 @@ export function createBadgeRouter(): Router {
 
   return router;
 }
+
+// Exported for tests that want to assert the schema directly without
+// constructing an Express request.
+export { BadgeParams };
 
 export default createBadgeRouter;

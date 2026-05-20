@@ -18,15 +18,294 @@
  * Role enforcement is applied per route using requireRole().
  *
  * Phase 12-13 build-out | Commit baseline: cc20b1a
+ *
+ * Phase 15 slice 7:
+ *   - 7 single-use schemas applied via validate() middleware at mount time.
+ *     The 3 GETs that read only X-Tenant-ID (invoice-certificate, subscription,
+ *     tokens) are out of scope — header validation lives upstream.
+ *   - Schemas: InvoiceSummaryQuery, InvoiceParams, GenerateInvoiceBody,
+ *     RegisterPolicyBody, UnderwritingAuditBody, CreateSubscriptionBody,
+ *     ApplyTokenBody.
+ *   - Slice 6g HIGH-3 fx_rate guard (with the documented
+ *     `parseFloat("0") || 1.0` bug fix) is fully absorbed by
+ *     `z.coerce.number().positive().finite().default(1.0)` on
+ *     GenerateInvoiceBody. The legacy inline block is replaced; the
+ *     bug-history rationale is preserved in the schema's doc comment so
+ *     the institutional memory survives the refactor.
+ *   - Local validTiers constant inside createSubscription() removed
+ *     (the schema's z.enum absorbs the membership check).
+ *
+ * Phase 15 slice 7.5 (follow-up):
+ *   - RegisterPolicyBody.coverage_type tightened from z.string().min(1)
+ *     to z.enum([...]) using the literal 6-value set extracted from
+ *     ../services/commercialEngine (CoverageType union at line 39 of
+ *     that file). The `as CoverageType` bridge cast in registerPolicy()
+ *     is removed — z.infer now produces the correct nominal type.
+ *
+ *     CORRECTION to a slice 7 claim: the slice 7 header said
+ *     "engine.registerPolicy() still throws on unknown CoverageType
+ *     values, so the contract is preserved." That was WRONG. The engine
+ *     accepts the string verbatim and INSERTs it directly into the
+ *     coverage_type column — there is no runtime enum check inside the
+ *     engine. If the DB column lacks a CHECK constraint, slice 7
+ *     accepted arbitrary garbage. Slice 7.5 closes this gap at the
+ *     validation boundary.
+ *
+ *   - InvoiceSummaryQuery.status enum corrected from the slice 7 guess
+ *     of {issued, paid, overdue, void} to match the actual LedgerStatus
+ *     union from commercialEngine line 37:
+ *       {draft, issued, paid, overdue, voided, disputed}
+ *     Slice 7 was missing draft/disputed entirely and had "void" (the
+ *     doc's guess) where the real value is "voided". This would have
+ *     400'd legitimate ?status=draft and ?status=disputed requests in
+ *     production. Pure regression fix.
+ *
+ *   - SYMMETRIC CLEANUP (not in original slice 7.5 scope but applied for
+ *     consistency): the equivalent `body.tier as SubscriptionTier` bridge
+ *     cast in createSubscription() is also dropped, since the schema's
+ *     z.enum(["PAY_AS_YOU_GO", ...]) already produces the exact
+ *     SubscriptionTier union the engine declares. The type-only imports
+ *     of `SubscriptionTier` and `CoverageType` from commercialEngine are
+ *     no longer referenced anywhere in this file and have been removed.
+ *     Behavior unchanged; this is a TypeScript-only tidy.
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional — see enumeration doc):
+ *   - GET /invoice-summary  limit/offset garbage strings  was parseInt→NaN
+ *     used unchecked in SQL (empty result or error) → now 400.
+ *   - GET /invoice-summary  status=<unknown>  previously hit the DB with
+ *     the bad value (returning empty result) → now 400. The status enum
+ *     is the full LedgerStatus union {draft, issued, paid, overdue,
+ *     voided, disputed} (corrected in slice 7.5 from the slice 7 guess).
+ *   - GET /invoice/:id  id=<non-uuid>  previously hit the DB (404 on miss)
+ *     → now 400. Same caveat as elsewhere; update fixtures if needed.
+ *   - POST /invoice/generate  invoice_currency=<not 3 chars>  was accepted
+ *     → now 400 (.length(3) for ISO 4217). ⚠ FLAGGED: if any fixture uses
+ *     "USDC" (4 chars, stablecoin) or similar, switch to z.string().min(1).
+ *   - POST /insurance/register  coverage_limit_usd=0  was rejected (falsy
+ *     check) → still rejected, now via .positive(). Same for
+ *     base_annual_premium_usd. ⚠ DELIBERATE TIGHTENING: deductible_usd=0
+ *     was rejected by the falsy check → now ACCEPTED via .nonnegative().
+ *     A zero-deductible policy is legitimate; this is an intentional fix.
+ *   - POST /insurance/register  policy_start_date / policy_end_date  must
+ *     match /^\d{4}-\d{2}-\d{2}$/ → was any string. Engine-level date
+ *     range validation (cross-field) stays inline / in the engine.
+ *   - POST /insurance/audit  registry_id=<non-uuid>  → now 400.
+ *   - POST /subscription/create  invoice_currency=<not 3 chars>  → 400
+ *     (same caveat as generateInvoice).
+ *   - POST /token/apply  ledger_id or token_id non-uuid  → now 400.
+ *   - All bodies: unknown fields silently ignored → now 400 (.strict()).
+ *
+ * NO BEHAVIOR CHANGES for:
+ *   - X-Tenant-ID header parsing via getTenantId() (throws 400 if missing;
+ *     schemas do not cover headers per the slice 7 convention).
+ *   - requireRole() role enforcement (still 403 with required/actual).
+ *   - HMAC tamper-evidence on invoices / certificates (Slice 6b origin;
+ *     still computed via loadHmacSecret + crypto.createHmac).
+ *   - Slice 6b.4 audit log on policy registration (commercialAuditLog
+ *     called outside the engine's transaction — same residual atomicity
+ *     gap as before, documented in the call site comment).
+ *   - Slice 6b.5 audit log on token application.
+ *   - Ledger-belongs-to-tenant 403 on /token/apply (semantic, retained).
+ *   - The 4-band insurance certificate response shape, golden thread
+ *     integrity check, days-to-expiry/audit math.
+ *   - Engine-level cross-field validation on RegisterPolicyBody (date
+ *     range, policy_number uniqueness) and CreateSubscriptionBody
+ *     (CUSTOM tier with no custom_* fields — flagged as a future
+ *     hardening per Appendix C, NOT applied in slice 7).
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green)
+ *   - grep -r validTiers src/ — must return no matches (the constant
+ *     was function-local to createSubscription)
+ *   - Verify test fixtures: any invoice_currency value should be 3 chars;
+ *     any UUID field (id, ledger_id, token_id, registry_id) should be
+ *     a real UUID; any policy_start_date / policy_end_date should match
+ *     YYYY-MM-DD form.
+ *   - ⚠ NEW IN SLICE 7.5: any /invoice-summary test that sends
+ *     ?status=void will now 400 — the real value is "voided". Update
+ *     fixtures. Any /insurance/register test that sends a coverage_type
+ *     outside the 6-value CoverageType union will now 400 — verify
+ *     fixtures use one of: cyber_liability, professional_indemnity,
+ *     fintech_comprehensive, data_breach, operational_risk,
+ *     regulatory_defence.
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import crypto from "crypto";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken }  from "./auth";
-import { CommercialEngine, loadHmacSecret, type SubscriptionTier, type CoverageType } from "../services/commercialEngine";
+import { validate } from "../middleware/validate";
+import { CommercialEngine, loadHmacSecret } from "../services/commercialEngine";
 import type { CaaSRole } from "./auth";
 import { commercialAuditLog } from "../lib/audit";
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * Query schema for GET /invoice-summary.
+ *
+ * - limit: int 1..50, default 12. Matches the legacy `Math.min(parseInt(...), 50)`
+ *   clamping but now rejects garbage instead of producing NaN.
+ * - offset: int >= 0, default 0.
+ * - status: full LedgerStatus union from commercialEngine.ts line 37
+ *   {draft, issued, paid, overdue, voided, disputed}. SLICE 7.5
+ *   CORRECTION: slice 7 inferred {issued, paid, overdue, void} from the
+ *   SUM CASE clauses in the aggregates query — but those clauses are
+ *   computed values, not the column's valid range. The actual column
+ *   constraint is wider AND has "voided" (not "void"). Slice 7 would
+ *   have 400'd legitimate ?status=draft and ?status=disputed requests.
+ *   This is a regression fix; ensure no fixtures send ?status=void
+ *   (the misspelling) — they need to be updated to "voided".
+ */
+const InvoiceSummaryQuery = z.object({
+  limit:  z.coerce.number().int().min(1).max(50).default(12),
+  offset: z.coerce.number().int().min(0).default(0),
+  status: z.enum(["draft", "issued", "paid", "overdue", "voided", "disputed"]).optional(),
+}).strict();
+
+/**
+ * Params schema for GET /invoice/:id.
+ *
+ * commercial_billing_ledgers.id is assumed UUID per the codebase convention.
+ * If the column is something else (auto-incr int, invoice-number string),
+ * loosen here and in the enumeration doc's Appendix A.
+ */
+const InvoiceParams = z.object({
+  id: z.string().uuid(),
+}).strict();
+
+/**
+ * Body schema for POST /invoice/generate.
+ *
+ * Slice 6g HIGH-3 history (preserved for institutional memory):
+ *   The previous handler used `parseFloat(fxRateRaw) || 1.0`, which had
+ *   two bugs:
+ *     1. parseFloat("0") || 1.0 evaluates to 1.0 because 0 is falsy.
+ *        A legitimate zero-rate input would be silently overwritten.
+ *     2. Negative rates and NaN passed through silently when paired with
+ *        the OR fallback that only catches NaN. We never want a negative
+ *        multiplier on an invoice — it would flip totals to refunds.
+ *
+ *   The slice 6g fix introduced an explicit NaN + positivity check
+ *   returning 400 on bad input, defaulting only when fx_rate was omitted.
+ *   This schema captures BOTH guarantees in one expression:
+ *     - .positive()  rejects 0 and negatives (fixes bug 1 and bug 2)
+ *     - .finite()    rejects NaN and ±Infinity (fixes bug 2)
+ *     - .default(1.0) handles the documented optional case
+ *   z.coerce.number() handles both string-encoded ("1.05") and numeric
+ *   (1.05) JSON inputs, matching the legacy parseFloat behavior.
+ *
+ * invoice_currency: BEHAVIOR CHANGE — was any string, now must be exactly
+ *   3 characters (ISO 4217). If a fixture uses "USDC" or similar, loosen
+ *   to z.string().min(1).default("USD"). The default of "USD" matches
+ *   the legacy `?? "USD"` fallback.
+ */
+const GenerateInvoiceBody = z.object({
+  fx_rate:          z.coerce.number().positive().finite().default(1.0),
+  invoice_currency: z.string().length(3).default("USD"),
+}).strict();
+
+/**
+ * Body schema for POST /insurance/register.
+ *
+ * SLICE 7.5: coverage_type is now z.enum(...) with the literal 6-value
+ * CoverageType union extracted from commercialEngine.ts line 39. Slice 7
+ * left this as z.string().min(1) because commercialEngine.ts wasn't
+ * available to inspect; that gap is now closed.
+ *
+ * IMPORTANT — engine does NOT validate coverageType at runtime:
+ *   CommercialEngine.registerPolicy accepts the string verbatim and
+ *   INSERTs it into the coverage_type column without any enum check.
+ *   The TypeScript `CoverageType` parameter type is enforced only at
+ *   compile time. This schema is therefore the ONLY runtime gate on
+ *   coverage_type validity in the request path. Do not loosen it
+ *   without also adding an engine-level check, or the column will
+ *   accept arbitrary strings.
+ *
+ * BEHAVIOR CHANGES:
+ *   - coverage_limit_usd / base_annual_premium_usd: .positive() preserves
+ *     the legacy falsy-check rejection of 0 explicitly.
+ *   - deductible_usd: .nonnegative() now accepts 0 (was rejected by the
+ *     falsy check). Intentional fix — a zero-deductible policy is
+ *     legitimate. Flagged in the header block.
+ *   - policy_start_date / policy_end_date: must match YYYY-MM-DD form.
+ *     The legacy handler accepted any string and passed it through to
+ *     the engine, which would likely fail downstream. Engine-level
+ *     cross-field date range validation (start < end) stays in the engine.
+ *   - SLICE 7.5: coverage_type must be one of the 6 CoverageType union
+ *     values. Slice 7 accepted any non-empty string; slice 7.5 closes
+ *     this to the literal set.
+ */
+const RegisterPolicyBody = z.object({
+  carrier_name:            z.string().min(1),
+  carrier_id:              z.string().min(1),
+  policy_number:           z.string().min(1),
+  coverage_type:           z.enum([
+    "cyber_liability",
+    "professional_indemnity",
+    "fintech_comprehensive",
+    "data_breach",
+    "operational_risk",
+    "regulatory_defence",
+  ]),
+  coverage_limit_usd:      z.coerce.number().positive().finite(),
+  deductible_usd:          z.coerce.number().nonnegative().finite(),
+  base_annual_premium_usd: z.coerce.number().positive().finite(),
+  policy_start_date:       z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  policy_end_date:         z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  jurisdiction:            z.string().min(1).optional(),
+}).strict();
+
+/**
+ * Body schema for POST /insurance/audit.
+ *
+ * registry_id is assumed UUID per the codebase convention. The legacy
+ * handler used `String(... ?? "")` then a non-empty check, which would
+ * have accepted any non-empty string and 404'd at the engine call.
+ */
+const UnderwritingAuditBody = z.object({
+  registry_id: z.string().uuid(),
+}).strict();
+
+/**
+ * Body schema for POST /subscription/create.
+ *
+ * - tier: z.enum absorbs the legacy `validTiers.includes(body.tier)` check.
+ *   The local validTiers constant has been removed from createSubscription().
+ * - invoice_currency: same length-3 caveat as GenerateInvoiceBody.
+ * - All custom_* fields: optional non-negative finite numbers; the int
+ *   fields (custom_runs, custom_monitors) use .int() because they're
+ *   counts.
+ *
+ * NOT enforced (intentionally — possible future hardening per Appendix C):
+ *   - When tier === "CUSTOM", at least one custom_* field. The current
+ *     handler passes undefined to the engine for missing values; schema
+ *     matches that. If business logic later requires CUSTOM to have at
+ *     least one custom field, add a .refine() here.
+ */
+const CreateSubscriptionBody = z.object({
+  tier:                   z.enum(["PAY_AS_YOU_GO", "GROWTH", "ENTERPRISE", "CUSTOM"]),
+  billing_cycle:          z.enum(["monthly", "quarterly", "annual"]).optional(),
+  invoice_currency:       z.string().length(3).optional(),
+  contract_ref:           z.string().min(1).optional(),
+  custom_fee:             z.coerce.number().nonnegative().finite().optional(),
+  custom_runs:            z.coerce.number().int().nonnegative().optional(),
+  custom_monitors:        z.coerce.number().int().nonnegative().optional(),
+  custom_overage_rate:    z.coerce.number().nonnegative().finite().optional(),
+  custom_monitor_overage: z.coerce.number().nonnegative().finite().optional(),
+}).strict();
+
+/**
+ * Body schema for POST /token/apply.
+ *
+ * Both IDs are assumed UUID. The ledger-belongs-to-tenant 403 check
+ * downstream is RETAINED — schema only validates shape, not authorization.
+ */
+const ApplyTokenBody = z.object({
+  ledger_id: z.string().uuid(),
+  token_id:  z.string().uuid(),
+}).strict();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -79,15 +358,20 @@ function requireRole(...roles: CaaSRole[]) {
  * Returns a paginated list of billing ledgers with line-item totals,
  * period parameters, settlement status, and applied token details.
  * Authorization: Executive
+ *
+ * After validate({ query: InvoiceSummaryQuery }):
+ *   - limit is a clamped int (1..50) with default 12
+ *   - offset is a non-negative int with default 0
+ *   - status, if present, is one of {issued, paid, overdue, void}
+ *   - The legacy parseInt+Math.min logic is absorbed; garbage 400s now.
  */
 async function getInvoiceSummary(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const engine   = getEngine(req);
   const db       = getDb(req);
 
-  const limit  = Math.min(parseInt((req.query.limit  as string) ?? "12", 10), 50);
-  const offset = parseInt((req.query.offset as string) ?? "0", 10);
-  const status = req.query.status as string | undefined;
+  const { limit, offset, status } =
+    req.query as unknown as z.infer<typeof InvoiceSummaryQuery>;
 
   let query = "SELECT * FROM commercial_billing_ledgers WHERE tenant_id = ?";
   const params: unknown[] = [tenantId];
@@ -202,12 +486,15 @@ async function getInvoiceSummary(req: Request, res: Response): Promise<void> {
  * GET /api/v1/commercial/invoice/:id
  * Returns a single billing ledger with full line items and token detail.
  * Authorization: Executive
+ *
+ * After validate({ params: InvoiceParams }), req.params.id is a validated
+ * UUID string.
  */
 async function getInvoice(req: Request, res: Response): Promise<void> {
   const tenantId  = getTenantId(req);
   const db        = getDb(req);
   const engine    = getEngine(req);
-  const ledgerId  = String(req.params.id);
+  const { id: ledgerId } = req.params as z.infer<typeof InvoiceParams>;
 
   const ledger = db
     .prepare("SELECT * FROM commercial_billing_ledgers WHERE id = ? AND tenant_id = ?")
@@ -225,35 +512,20 @@ async function getInvoice(req: Request, res: Response): Promise<void> {
  * Generates and persists a new invoice for the current billing period.
  * Body: { fx_rate?, invoice_currency? }
  * Authorization: Executive
+ *
+ * After validate({ body: GenerateInvoiceBody }):
+ *   - fx_rate is a positive finite number with default 1.0 (Slice 6g HIGH-3
+ *     guarantee preserved — see schema comment for the bug history).
+ *   - invoice_currency is a 3-char ISO 4217 code with default "USD".
+ *   - The legacy inline parseFloat + NaN/positivity guard block is gone;
+ *     the schema captures the same invariants in one expression.
  */
 async function generateInvoice(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const engine   = getEngine(req);
 
-  // Slice 6g HIGH-3: fx_rate validation.
-  // Previous form `parseFloat(...) || 1.0` had two bugs:
-  //   1. parseFloat("0") || 1.0 evaluates to 1.0 because 0 is falsy.
-  //      A legitimate zero-rate input would be silently overwritten.
-  //   2. Negative rates and NaN passed through silently when paired with
-  //      the OR fallback only catching NaN. We never want a negative
-  //      multiplier on an invoice — it would flip totals to refunds.
-  // Fix: explicit NaN + positivity check, 400 on bad input. Only default
-  // when fx_rate is omitted entirely (the documented optional case).
-  const fxRateRaw = (req.body as { fx_rate?: string }).fx_rate;
-  let fxRate: number;
-  if (fxRateRaw === undefined || fxRateRaw === null) {
-    fxRate = 1.0;
-  } else {
-    const parsed = parseFloat(fxRateRaw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      res.status(400).json({
-        error: "fx_rate must be a positive finite number when present",
-      });
-      return;
-    }
-    fxRate = parsed;
-  }
-  const invoiceCurrency = (req.body as { invoice_currency?: string }).invoice_currency ?? "USD";
+  const { fx_rate: fxRate, invoice_currency: invoiceCurrency } =
+    req.body as z.infer<typeof GenerateInvoiceBody>;
 
   const result = engine.generateInvoice(tenantId, fxRate, invoiceCurrency);
 
@@ -454,36 +726,24 @@ async function getInsuranceCertificate(req: Request, res: Response): Promise<voi
  *         deductible_usd, base_annual_premium_usd, policy_start_date, policy_end_date,
  *         jurisdiction? }
  * Authorization: Executive
+ *
+ * After validate({ body: RegisterPolicyBody }):
+ *   - All 9 required fields are present and well-typed.
+ *   - Numeric fields are coerced and constrained (.positive() on
+ *     premium/limit, .nonnegative() on deductible).
+ *   - Date fields match YYYY-MM-DD form.
+ *   - coverage_type is one of the 6 CoverageType union values (slice 7.5).
+ *   - The legacy `for (const field of required) { if (!body[field]) ... }`
+ *     loop is absorbed; the local `required` const has been removed.
  */
 async function registerPolicy(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const engine   = getEngine(req);
 
-  const body = req.body as {
-    carrier_name:              string;
-    carrier_id:                string;
-    policy_number:             string;
-    coverage_type:             CoverageType;
-    coverage_limit_usd:        number;
-    deductible_usd:            number;
-    base_annual_premium_usd:   number;
-    policy_start_date:         string;
-    policy_end_date:           string;
-    jurisdiction?:             string;
-  };
-
-  const required = [
-    "carrier_name", "carrier_id", "policy_number", "coverage_type",
-    "coverage_limit_usd", "deductible_usd", "base_annual_premium_usd",
-    "policy_start_date", "policy_end_date",
-  ] as const;
-
-  for (const field of required) {
-    if (!body[field]) {
-      res.status(400).json({ error: `Field "${field}" is required` });
-      return;
-    }
-  }
+  // body.coverage_type is now a CoverageType-shaped literal (z.enum from
+  // the schema produces the exact union the engine declares), so no
+  // bridge cast is needed at the engine call site.
+  const body = req.body as z.infer<typeof RegisterPolicyBody>;
 
   const registry = engine.registerPolicy({
     tenantId,
@@ -491,9 +751,9 @@ async function registerPolicy(req: Request, res: Response): Promise<void> {
     carrierId:            body.carrier_id,
     policyNumber:         body.policy_number,
     coverageType:         body.coverage_type,
-    coverageLimitUsd:     Number(body.coverage_limit_usd),
-    deductibleUsd:        Number(body.deductible_usd),
-    baseAnnualPremiumUsd: Number(body.base_annual_premium_usd),
+    coverageLimitUsd:     body.coverage_limit_usd,
+    deductibleUsd:        body.deductible_usd,
+    baseAnnualPremiumUsd: body.base_annual_premium_usd,
     policyStartDate:      body.policy_start_date,
     policyEndDate:        body.policy_end_date,
     jurisdiction:         body.jurisdiction,
@@ -519,8 +779,8 @@ async function registerPolicy(req: Request, res: Response): Promise<void> {
       risk_band:     registry.risk_band,
     }),
     {
-      coverage_limit_usd:       Number(body.coverage_limit_usd),
-      base_annual_premium_usd:  Number(body.base_annual_premium_usd),
+      coverage_limit_usd:       body.coverage_limit_usd,
+      base_annual_premium_usd:  body.base_annual_premium_usd,
       policy_start_date:        body.policy_start_date,
       policy_end_date:          body.policy_end_date,
     }
@@ -540,13 +800,15 @@ async function registerPolicy(req: Request, res: Response): Promise<void> {
  * Triggers an on-demand underwriting risk audit for the tenant.
  * Body: { registry_id }
  * Authorization: Executive
+ *
+ * After validate({ body: UnderwritingAuditBody }), registry_id is a
+ * validated UUID string. The legacy String(... ?? "") + non-empty check
+ * is absorbed.
  */
 async function triggerUnderwritingAudit(req: Request, res: Response): Promise<void> {
   const tenantId  = getTenantId(req);
   const engine    = getEngine(req);
-  const registryId = String((req.body as { registry_id?: string }).registry_id ?? "");
-
-  if (!registryId) { res.status(400).json({ error: "registry_id is required" }); return; }
+  const { registry_id: registryId } = req.body as z.infer<typeof UnderwritingAuditBody>;
 
   const result = engine.computeUnderwritingRiskScore(tenantId, registryId);
 
@@ -597,28 +859,20 @@ async function getSubscription(req: Request, res: Response): Promise<void> {
  *         custom_fee?, custom_runs?, custom_monitors?,
  *         custom_overage_rate?, custom_monitor_overage? }
  * Authorization: Executive
+ *
+ * After validate({ body: CreateSubscriptionBody }):
+ *   - tier is a validated SubscriptionTier enum value.
+ *   - All optional custom_* fields are coerced numbers with sane
+ *     constraints. The legacy `Number(body.custom_fee)` etc. casts at
+ *     the engine call site are redundant — the schema has already
+ *     produced numbers via z.coerce.number().
+ *   - The local validTiers constant has been removed.
  */
 async function createSubscription(req: Request, res: Response): Promise<void> {
   const tenantId = getTenantId(req);
   const engine   = getEngine(req);
 
-  const body = req.body as {
-    tier:                   SubscriptionTier;
-    billing_cycle?:         "monthly" | "quarterly" | "annual";
-    invoice_currency?:      string;
-    contract_ref?:          string;
-    custom_fee?:            number;
-    custom_runs?:           number;
-    custom_monitors?:       number;
-    custom_overage_rate?:   number;
-    custom_monitor_overage?: number;
-  };
-
-  const validTiers: SubscriptionTier[] = ["PAY_AS_YOU_GO", "GROWTH", "ENTERPRISE", "CUSTOM"];
-  if (!body.tier || !validTiers.includes(body.tier)) {
-    res.status(400).json({ error: `tier must be one of: ${validTiers.join(", ")}` });
-    return;
-  }
+  const body = req.body as z.infer<typeof CreateSubscriptionBody>;
 
   const sub = engine.createSubscription({
     tenantId,
@@ -626,11 +880,11 @@ async function createSubscription(req: Request, res: Response): Promise<void> {
     billingCycle:         body.billing_cycle,
     contractRef:          body.contract_ref,
     invoiceCurrency:      body.invoice_currency,
-    customFee:            body.custom_fee          !== undefined ? Number(body.custom_fee)            : undefined,
-    customRuns:           body.custom_runs          !== undefined ? Number(body.custom_runs)           : undefined,
-    customMonitors:       body.custom_monitors       !== undefined ? Number(body.custom_monitors)       : undefined,
-    customOverageRate:    body.custom_overage_rate   !== undefined ? Number(body.custom_overage_rate)   : undefined,
-    customMonitorOverage: body.custom_monitor_overage !== undefined ? Number(body.custom_monitor_overage) : undefined,
+    customFee:            body.custom_fee,
+    customRuns:           body.custom_runs,
+    customMonitors:       body.custom_monitors,
+    customOverageRate:    body.custom_overage_rate,
+    customMonitorOverage: body.custom_monitor_overage,
   });
 
   res.status(201).json({
@@ -649,14 +903,16 @@ async function createSubscription(req: Request, res: Response): Promise<void> {
  * Applies a premium reduction token to an invoice.
  * Body: { ledger_id, token_id }
  * Authorization: Executive
+ *
+ * After validate({ body: ApplyTokenBody }), both IDs are validated UUIDs.
+ * The legacy two presence guards are absorbed. The ledger-belongs-to-tenant
+ * 403 check stays inline — semantic authorization, not shape.
  */
 async function applyToken(req: Request, res: Response): Promise<void> {
   const engine   = getEngine(req);
   const tenantId = getTenantId(req);
 
-  const { ledger_id, token_id } = req.body as { ledger_id?: string; token_id?: string };
-  if (!ledger_id) { res.status(400).json({ error: "ledger_id is required" }); return; }
-  if (!token_id)  { res.status(400).json({ error: "token_id is required" });  return; }
+  const { ledger_id, token_id } = req.body as z.infer<typeof ApplyTokenBody>;
 
   // Verify ledger belongs to this tenant
   const ledger = getDb(req)
@@ -738,25 +994,44 @@ export function createCommercialRouter(): Router {
   // All commercial routes require a valid JWT access token
   router.use(requireAccessToken);
 
+  // Each schema is single-use — no Appendix B reuse for commercial routes.
+  // validate() is composed at mount time per-route. The ordering pattern
+  // across slice 7 is: requireAccessToken (router-level) → requireRole →
+  // validate → async_(handler). requireRole runs before validate so an
+  // insufficient-role caller gets 403 instead of 400, mirroring the
+  // requireBusinessPlane → validate ordering in provisioning.ts.
+
   // Invoice routes — Executive only
-  router.get("/invoice-summary",      requireRole("Executive"),             async_(getInvoiceSummary));
-  router.get("/invoice/:id",          requireRole("Executive"),             async_(getInvoice));
-  router.post("/invoice/generate",    requireRole("Executive"),             async_(generateInvoice));
+  router.get("/invoice-summary",      requireRole("Executive"),             validate({ query: InvoiceSummaryQuery }), async_(getInvoiceSummary));
+  router.get("/invoice/:id",          requireRole("Executive"),             validate({ params: InvoiceParams }),      async_(getInvoice));
+  router.post("/invoice/generate",    requireRole("Executive"),             validate({ body: GenerateInvoiceBody }),  async_(generateInvoice));
 
   // Insurance routes
-  router.get("/insurance-certificate", requireRole("Executive", "Auditor"), async_(getInsuranceCertificate));
-  router.post("/insurance/register",  requireRole("Executive"),             async_(registerPolicy));
-  router.post("/insurance/audit",     requireRole("Executive"),             async_(triggerUnderwritingAudit));
+  router.get("/insurance-certificate", requireRole("Executive", "Auditor"),                                           async_(getInsuranceCertificate));
+  router.post("/insurance/register",  requireRole("Executive"),             validate({ body: RegisterPolicyBody }),   async_(registerPolicy));
+  router.post("/insurance/audit",     requireRole("Executive"),             validate({ body: UnderwritingAuditBody }), async_(triggerUnderwritingAudit));
 
   // Subscription routes
-  router.get("/subscription",         requireRole("Executive", "Auditor"),  async_(getSubscription));
-  router.post("/subscription/create", requireRole("Executive"),             async_(createSubscription));
+  router.get("/subscription",         requireRole("Executive", "Auditor"),                                            async_(getSubscription));
+  router.post("/subscription/create", requireRole("Executive"),             validate({ body: CreateSubscriptionBody }), async_(createSubscription));
 
   // Token routes
-  router.post("/token/apply",         requireRole("Executive"),             async_(applyToken));
-  router.get("/tokens",               requireRole("Executive", "Auditor"),  async_(getTokens));
+  router.post("/token/apply",         requireRole("Executive"),             validate({ body: ApplyTokenBody }),       async_(applyToken));
+  router.get("/tokens",               requireRole("Executive", "Auditor"),                                            async_(getTokens));
 
   return router;
 }
+
+// Exported for tests that want to assert the schemas directly without
+// constructing an Express request.
+export {
+  InvoiceSummaryQuery,
+  InvoiceParams,
+  GenerateInvoiceBody,
+  RegisterPolicyBody,
+  UnderwritingAuditBody,
+  CreateSubscriptionBody,
+  ApplyTokenBody,
+};
 
 export default createCommercialRouter;

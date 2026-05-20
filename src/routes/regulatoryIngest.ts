@@ -36,12 +36,97 @@
  *   boundary sanity).
  *
  * Phase 14 build-out
+ *
+ * Phase 15 slice 7 (option A — partial schema coverage):
+ *   - 2 of 4 routes are schema-validated: GET /frameworks (via
+ *     ListFrameworksQuery) and GET /frameworks/:code (via FrameworkParams).
+ *   - 2 of 4 routes are DELIBERATELY NOT schema-validated: POST /onboard
+ *     and PATCH /frameworks/:code. Both return errors in the legacy shape
+ *         { error: "VALIDATION_FAILED", message: "...", details: ["...", ...] }
+ *     where `details` is an array of human-readable strings. The
+ *     validate() middleware emits the standard AppError shape:
+ *         { section: "body", issues: [{ path, code, message }, ...] }
+ *     Applying the schema to these two routes would silently change the
+ *     error response format that external consumers may parse.
+ *     validateFrameworkPayload() and its caller logic are preserved
+ *     verbatim on both routes.
+ *
+ *     This is option A per the slice 7 contract-shape discussion
+ *     (enumeration doc Appendix C, "API contract changes" subsection).
+ *     The doc lists options A (preserve legacy), B (accept normalization),
+ *     C (wrapper). A keeps every existing consumer working at the cost of
+ *     leaving the most complex validator in the codebase outside the
+ *     schema framework. The right place to revisit this is a future slice
+ *     that explicitly migrates clients off the legacy shape — NOT slice 7.
+ *
+ *   - The two in-scope GETs DO change their error response shape on
+ *     validation failures:
+ *       GET /frameworks?is_active=garbage         was {error:"INVALID_FILTER",message:"..."}
+ *                                                 now standard AppError shape
+ *       GET /frameworks/:badcode                  was {error:"INVALID_CODE",   message:"..."}
+ *                                                 now standard AppError shape
+ *     The doc treats these as in-scope tightenings (Appendix C) rather
+ *     than contract breaks — the `{error, message}` form on GETs is a
+ *     subset of AppError, not the `{error, message, details:[]}` array
+ *     form that the protected POST/PATCH endpoints emit.
+ *
+ *   - The local FrameworkParams constant is reused conceptually with the
+ *     PatchFrameworkBody concept *deferred* — under option A, PATCH gets
+ *     no schema at all (applying params-only validate() would create a
+ *     route where param errors use the new shape and body errors use the
+ *     legacy shape — worse than uniform unschemed).
+ *
+ *   - The module-level constants (FIELD_KEY_RE, FRAMEWORK_CODE_RE,
+ *     REGION_CODE_RE, REGEX_FLAGS_RE, ISO_DATE_RE, ISO8601_RE, DATA_TYPES,
+ *     MAX_*) are kept — they back validateFrameworkPayload (still inline)
+ *     AND are reused inside the new schemas. Single source of truth for
+ *     the regex/length bounds.
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional — applies only to the two
+ * in-scope GETs; PATCH and POST are byte-identical to pre-slice-7):
+ *   - GET /frameworks ?region_code=<not-2-char-upper>  was silently
+ *     ignored ("no filter applied") → now 400. This is the Appendix C
+ *     tightening: silent degradation hides client bugs. The change
+ *     surfaces them.
+ *   - GET /frameworks ?is_active=<not "true"/"false">  was already 400
+ *     via inline guard → still 400, but via the standard AppError shape
+ *     instead of the legacy {error:"INVALID_FILTER",message:"..."} shape.
+ *   - GET /frameworks/:code with invalid code  was 400 via inline guard
+ *     with {error:"INVALID_CODE",message:"..."} → now 400 via standard
+ *     AppError shape.
+ *   - Unknown query keys on GET /frameworks now 400 (.strict()). Was
+ *     silently ignored.
+ *
+ * NO BEHAVIOR CHANGES for:
+ *   - POST /onboard: validateFrameworkPayload pipeline preserved exactly,
+ *     including the legacy {error:"VALIDATION_FAILED", message, details:[]}
+ *     response shape.
+ *   - PATCH /frameworks/:code: all inline checks (code regex, isObject
+ *     body, type checks, at-least-one rule) preserved, including the
+ *     legacy error response shape.
+ *   - Framework uniqueness 409 check via stmts.findByCode.
+ *   - UNIQUE-constraint race handling.
+ *   - All commercialAuditLog writes.
+ *   - requireGlobalSuperAdmin middleware (router-level).
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing tests must stay green)
+ *   - Verify any test that hits GET /frameworks?region_code=<garbage>
+ *     and expects an empty data array; that test now expects 400. If
+ *     such tests exist, decide: update the assertion (the right answer,
+ *     per the tightening rationale) or argue that the silent-degrade
+ *     behavior was load-bearing (it wasn't, per the doc).
+ *   - Verify no test asserts on the body of GET /frameworks?is_active=foo
+ *     looking for `{error:"INVALID_FILTER"}` — that shape is gone for
+ *     this route under slice 7.
  */
 
 import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import type { Database as DB } from "better-sqlite3";
 
 import { requireGlobalSuperAdmin } from "../middleware/dualPlaneAuth";
+import { validate } from "../middleware/validate";
 import { commercialAuditLog } from "../lib/audit";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -64,6 +149,70 @@ const MAX_ALLOWED_VALUES      = 500;
 const MAX_REGEX_LENGTH        = 2048;
 const MAX_DESCRIPTION_LENGTH  = 8192;
 const MAX_ERROR_MSG_LENGTH    = 1024;
+
+// ─── Schemas (slice 7) ────────────────────────────────────────────────────────
+//
+// Schemas for the two in-scope routes: GET /frameworks and
+// GET /frameworks/:code. The two out-of-scope routes (POST /onboard,
+// PATCH /frameworks/:code) deliberately have no schemas — see the file
+// header "Phase 15 slice 7 (option A)" for the rationale.
+//
+// The regex constants (FRAMEWORK_CODE_RE, REGION_CODE_RE) declared above
+// are reused here so the schema layer and the inline validateFrameworkPayload
+// layer cannot drift apart on what counts as a valid code.
+
+/**
+ * Params schema for GET /frameworks/:code.
+ *
+ * Reuses FRAMEWORK_CODE_RE (declared at the top of the file): codes are
+ * UPPER_SNAKE_CASE starting with a letter (e.g. GDPR, SEC_17A4, MIFID2).
+ * Lowercase letters, hyphens, and other punctuation are rejected.
+ *
+ * NOT reused on PATCH /frameworks/:code because PATCH stays unschemed
+ * under option A — mixing schema-emitted AppError on param errors with
+ * legacy {error,message,details} on body errors would create an
+ * inconsistent route. See header block.
+ *
+ * The max(64) ceiling matches the OnboardBody.framework_code constraint
+ * in the enumeration doc Appendix A.
+ */
+const FrameworkParams = z.object({
+  code: z.string().min(1).max(64).regex(FRAMEWORK_CODE_RE),
+}).strict();
+
+/**
+ * Query schema for GET /frameworks.
+ *
+ * BEHAVIOR CHANGE — region_code:
+ *   The legacy handler did:
+ *     const regionOk = regionFilter !== undefined && REGION_CODE_RE.test(regionFilter);
+ *     if (regionOk && activeProvided) { ...filter both... }
+ *     else if (regionOk)              { ...filter region... }
+ *     else                            { ...no filter... }
+ *   A region_code that didn't match REGION_CODE_RE was silently demoted
+ *   to "no filter," masking caller bugs. Schema rejects with 400 —
+ *   the Appendix C tightening rationale: silent degradation hides
+ *   client bugs; explicit failure surfaces them.
+ *
+ * BEHAVIOR CHANGE — is_active:
+ *   The legacy handler accepted exactly "true" or "false" and 400'd
+ *   anything else via inline guard:
+ *     {error: "INVALID_FILTER", message: "is_active must be 'true' or 'false'."}
+ *   Schema preserves the SAME validity rule but emits the standard
+ *   AppError shape on failure. Note: this is the only error-shape
+ *   change on a GET endpoint in slice 7 for this file. The doc treats
+ *   it as in-scope because GET errors use the simpler `{error, message}`
+ *   form, not the `{error, message, details: [...]}` array form that's
+ *   protected on POST/PATCH.
+ *
+ * The boolean parsing uses z.enum(["true","false"]).transform(...) per
+ * Conventions § 4 (z.coerce.boolean is a trap — "false" coerces to true).
+ * The transform produces a real boolean for the handler.
+ */
+const ListFrameworksQuery = z.object({
+  region_code: z.string().length(2).regex(REGION_CODE_RE).optional(),
+  is_active:   z.enum(["true", "false"]).transform(s => s === "true").optional(),
+}).strict();
 
 // ─── Payload Types ────────────────────────────────────────────────────────────
 
@@ -716,84 +865,90 @@ export function createRegulatoryIngestRouter(db: DB): Router {
   // GET /frameworks — list frameworks with optional filters
   //   ?region_code=GH
   //   ?is_active=true|false
+  //
+  // Slice 7: validate({ query: ListFrameworksQuery }) absorbs:
+  //   - the regex check on region_code (legacy "silently no filter" path
+  //     is gone; bad region_code now 400s — see header for rationale),
+  //   - the "true"/"false" parsing of is_active (now a real boolean),
+  //   - the inline {error:"INVALID_FILTER"} 400 (now standard AppError shape).
   // ──────────────────────────────────────────────────────────────────────────
-  router.get("/frameworks", (req: Request, res: Response): void => {
-    const regionFilter   = req.query.region_code  as string | undefined;
-    const activeFilterQ  = req.query.is_active    as string | undefined;
+  router.get(
+    "/frameworks",
+    validate({ query: ListFrameworksQuery }),
+    (req: Request, res: Response): void => {
+      const { region_code, is_active } =
+        req.query as unknown as z.infer<typeof ListFrameworksQuery>;
 
-    let rows: unknown[];
+      // Schema has already enforced shape. Branching now keys on
+      // presence + the (real) boolean rather than the legacy string parsing.
+      // Note: better-sqlite3 prepared statements expect 0/1 for booleans
+      // bound to INTEGER columns, so convert is_active back here.
+      const activeValue = is_active === undefined ? null : (is_active ? 1 : 0);
 
-    const regionOk = regionFilter !== undefined && REGION_CODE_RE.test(regionFilter);
-    const activeProvided = activeFilterQ !== undefined;
-    const activeValue = activeFilterQ === "true" ? 1 : activeFilterQ === "false" ? 0 : null;
+      let rows: unknown[];
+      if (region_code !== undefined && activeValue !== null) {
+        rows = stmts.listFrameworksByRegionAndActive.all(region_code, activeValue);
+      } else if (region_code !== undefined) {
+        rows = stmts.listFrameworksByRegion.all(region_code);
+      } else if (activeValue !== null) {
+        rows = stmts.listFrameworksByActive.all(activeValue);
+      } else {
+        rows = stmts.listFrameworks.all();
+      }
 
-    if (activeProvided && activeValue === null) {
-      res.status(400).json({
-        error:   "INVALID_FILTER",
-        message: "is_active must be 'true' or 'false'.",
-      });
-      return;
-    }
-
-    if (regionOk && activeProvided) {
-      rows = stmts.listFrameworksByRegionAndActive.all(regionFilter, activeValue);
-    } else if (regionOk) {
-      rows = stmts.listFrameworksByRegion.all(regionFilter);
-    } else if (activeProvided) {
-      rows = stmts.listFrameworksByActive.all(activeValue);
-    } else {
-      rows = stmts.listFrameworks.all();
-    }
-
-    res.json({ count: rows.length, data: rows });
-  });
+      res.json({ count: rows.length, data: rows });
+    },
+  );
 
   // ──────────────────────────────────────────────────────────────────────────
   // GET /frameworks/:code — fetch one framework with rules + purposes
+  //
+  // Slice 7: validate({ params: FrameworkParams }) absorbs the inline
+  // FRAMEWORK_CODE_RE check that returned {error:"INVALID_CODE"} on miss.
+  // The new failure mode is the standard AppError shape — per header,
+  // the doc treats GET error-shape changes as in-scope (the protected
+  // shape is the {error,message,details:[]} array form on POST/PATCH).
   // ──────────────────────────────────────────────────────────────────────────
-  router.get("/frameworks/:code", (req: Request, res: Response): void => {
-    const code = String(req.params.code);
-    if (!FRAMEWORK_CODE_RE.test(code)) {
-      res.status(400).json({
-        error:   "INVALID_CODE",
-        message: "framework code must be UPPER_SNAKE_CASE.",
+  router.get(
+    "/frameworks/:code",
+    validate({ params: FrameworkParams }),
+    (req: Request, res: Response): void => {
+      const { code } = req.params as z.infer<typeof FrameworkParams>;
+
+      const framework = stmts.findByCode.get(code) as
+        | { id: number; metadata: string; [k: string]: unknown }
+        | undefined;
+
+      if (!framework) {
+        res.status(404).json({
+          error:   "FRAMEWORK_NOT_FOUND",
+          message: `No framework found with code "${code}".`,
+        });
+        return;
+      }
+
+      const fieldRulesRaw = stmts.getFieldRules.all(framework.id) as Array<{
+        allowed_values: string | null;
+        constraints:    string;
+        [k: string]:    unknown;
+      }>;
+      const consentPurposes = stmts.getConsentPurposes.all(framework.id);
+
+      // Parse JSON columns on the way out.
+      const fieldRules = fieldRulesRaw.map((r) => ({
+        ...r,
+        allowed_values: r.allowed_values ? safeJsonParse(r.allowed_values, []) : null,
+        constraints:    safeJsonParse(r.constraints, {}),
+      }));
+
+      res.json({
+        ...framework,
+        metadata:         safeJsonParse(framework.metadata, {}),
+        field_rules:      fieldRules,
+        consent_purposes: consentPurposes,
       });
-      return;
-    }
-
-    const framework = stmts.findByCode.get(code) as
-      | { id: number; metadata: string; [k: string]: unknown }
-      | undefined;
-
-    if (!framework) {
-      res.status(404).json({
-        error:   "FRAMEWORK_NOT_FOUND",
-        message: `No framework found with code "${code}".`,
-      });
-      return;
-    }
-
-    const fieldRulesRaw = stmts.getFieldRules.all(framework.id) as Array<{
-      allowed_values: string | null;
-      constraints:    string;
-      [k: string]:    unknown;
-    }>;
-    const consentPurposes = stmts.getConsentPurposes.all(framework.id);
-
-    // Parse JSON columns on the way out.
-    const fieldRules = fieldRulesRaw.map((r) => ({
-      ...r,
-      allowed_values: r.allowed_values ? safeJsonParse(r.allowed_values, []) : null,
-      constraints:    safeJsonParse(r.constraints, {}),
-    }));
-
-    res.json({
-      ...framework,
-      metadata:         safeJsonParse(framework.metadata, {}),
-      field_rules:      fieldRules,
-      consent_purposes: consentPurposes,
-    });
-  });
+    },
+  );
 
   // ──────────────────────────────────────────────────────────────────────────
   // PATCH /frameworks/:code — toggle is_active / merge metadata
@@ -913,3 +1068,10 @@ function safeJsonParse<T>(s: string | null | undefined, fallback: T): T {
 
 // Suppress unused-warning on ISO8601_RE — reserved for future timestamp fields.
 void ISO8601_RE;
+
+// Exported for tests that want to assert the schemas directly without
+// constructing an Express request. Slice 7 only schemas the two GETs;
+// the POST /onboard and PATCH /frameworks/:code routes deliberately
+// stay on validateFrameworkPayload (see file header for option-A
+// rationale and the legacy {error,message,details:[]} shape preservation).
+export { FrameworkParams, ListFrameworksQuery };
