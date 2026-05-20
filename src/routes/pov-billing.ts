@@ -20,11 +20,39 @@
  *
  * Evidence source:
  *   - role_access_metrics (Phase 12) for blocked-risk counts.
+ *
+ * Phase 15 slice 7:
+ *   - Replaced parseWindowDays() helper (silent clamping of invalid input)
+ *     with StatementQuery schema applied via validate() middleware.
+ *   - accountId param now validated as UUID; legacy String() coercion
+ *     removed.
+ *   - Both routes share the same params+query schemas via a single
+ *     validate({...}) call composed at mount time.
+ *
+ * BEHAVIOR CHANGES from slice 7 (intentional — silent clamping was masking
+ * caller bugs):
+ *   - window_days=-5 was silently clamped to 30 → now 400.
+ *   - window_days=abc was silently clamped to 30 → now 400.
+ *   - window_days=9999 was silently clamped to 365 → now 400.
+ *   - accountId=<non-uuid> previously hit the DB (returning 404 on miss)
+ *     → now 400 at the validation boundary.
+ *
+ * If any test relied on the legacy clamping or non-UUID accountId tolerance,
+ * the fix is to update the test fixture, not loosen the schema. See
+ * docs/slice7-enumeration.md Appendix C for the full list of intentional
+ * behavior changes in slice 7.
+ *
+ * Pre-merge checks the implementation session should run:
+ *   - npm test (all 143 existing + any pov-billing tests must stay green)
+ *   - grep -r parseWindowDays src/ — must return no matches outside this
+ *     file (the function was not exported; flag if anything imported it)
  */
 
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { z } from "zod";
 import type { Database as DB } from "better-sqlite3";
 import { requireAccessToken } from "./auth";
+import { validate } from "../middleware/validate";
 import type { AccountTier } from "./provisioning";
 
 // ─── Tier-Keyed Penalty Model (TODO: calibrate) ───────────────────────────────
@@ -45,6 +73,32 @@ const TIER_MONTHLY_COST_USD: Record<AccountTier, number> = {
 
 /** Boundary crossings are weighted higher than ordinary denials. */
 const CROSSING_MULTIPLIER = 3;
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+/**
+ * accountId is assumed UUID per the codebase convention (crypto.randomUUID()
+ * in provisioning.ts at account creation time). If the accounts.id column is
+ * ever changed to a different format (numeric, ULID, etc.), loosen to
+ * z.string().min(1) here and the schemas in the enumeration doc's Appendix A.
+ */
+const StatementParams = z.object({
+  accountId: z.string().uuid(),
+}).strict();
+
+/**
+ * window_days: integer 1..365, default 30.
+ *
+ * z.coerce.number() handles query-string inputs (which arrive as strings even
+ * for numeric values). z.string().int() then rejects "1.5" and similar, and
+ * .min(1).max(365) replaces the legacy clamping with explicit validation.
+ *
+ * The .default(30) ensures handlers see a number even when the query param
+ * is omitted — matching the legacy `?? "30"` fallback in parseWindowDays.
+ */
+const StatementQuery = z.object({
+  window_days: z.coerce.number().int().min(1).max(365).default(30),
+}).strict();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,12 +138,6 @@ interface Statement {
 
 function getDb(req: Request): DB {
   return (req.app.locals as { db: DB }).db;
-}
-
-function parseWindowDays(req: Request): number {
-  const raw = parseInt((req.query.window_days as string) ?? "30", 10);
-  if (!Number.isFinite(raw) || raw <= 0) return 30;
-  return Math.min(raw, 365);
 }
 
 function isoDaysAgo(days: number): string {
@@ -212,10 +260,19 @@ function renderTextStatement(s: Statement): string {
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
+/**
+ * After validate({params, query}) runs, req.params.accountId is a validated
+ * UUID string and req.query.window_days is a parsed number with default 30
+ * applied. The legacy String() and parseWindowDays() calls are unnecessary.
+ *
+ * The local destructure-with-cast is a TypeScript ergonomic — z.infer types
+ * do not automatically flow onto express.Request without an augmentation we
+ * have not added in slice 7.
+ */
 async function getJsonStatement(req: Request, res: Response): Promise<void> {
   const db         = getDb(req);
-  const accountId  = String(req.params.accountId);
-  const windowDays = parseWindowDays(req);
+  const { accountId }  = req.params as z.infer<typeof StatementParams>;
+  const { window_days: windowDays } = req.query as unknown as z.infer<typeof StatementQuery>;
 
   const statement = buildStatement(db, accountId, windowDays);
   if (!statement) { res.status(404).json({ error: "Account not found" }); return; }
@@ -225,8 +282,8 @@ async function getJsonStatement(req: Request, res: Response): Promise<void> {
 
 async function getTextStatement(req: Request, res: Response): Promise<void> {
   const db         = getDb(req);
-  const accountId  = String(req.params.accountId);
-  const windowDays = parseWindowDays(req);
+  const { accountId }  = req.params as z.infer<typeof StatementParams>;
+  const { window_days: windowDays } = req.query as unknown as z.infer<typeof StatementQuery>;
 
   const statement = buildStatement(db, accountId, windowDays);
   if (!statement) { res.status(404).type("text/plain").send("Account not found\n"); return; }
@@ -245,13 +302,23 @@ export function createPovBillingRouter(): Router {
 
   router.use(requireAccessToken);
 
-  router.get("/:accountId/statement",      async_(getJsonStatement));
-  router.get("/:accountId/statement.txt",  async_(getTextStatement));
+  // Both routes share identical params+query shapes. validate() is called
+  // per-route rather than at router-level because router.use(validate(...))
+  // would also run on any future routes added to this router without
+  // matching schemas, which is a subtle footgun. Per-route mounting is
+  // explicit and survives router expansion.
+  const validateStatement = validate({
+    params: StatementParams,
+    query:  StatementQuery,
+  });
+
+  router.get("/:accountId/statement",      validateStatement, async_(getJsonStatement));
+  router.get("/:accountId/statement.txt",  validateStatement, async_(getTextStatement));
 
   return router;
 }
 
 // Exported for tests and any future scheduled-export jobs.
-export { buildStatement, renderTextStatement };
+export { buildStatement, renderTextStatement, StatementParams, StatementQuery };
 
 export default createPovBillingRouter;
