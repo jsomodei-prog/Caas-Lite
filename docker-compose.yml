@@ -1,72 +1,61 @@
 # docker-compose.yml
 #
-# CaaS-Lite production deployment template.
+# Local development compose file. NOT for production — `fly deploy` is the
+# production path. This is purely for:
+#   - Verifying the Dockerfile builds on your machine before pushing.
+#   - Running an integration test against the production-ish image.
+#   - Onboarding a new dev who doesn't want to install Node / argon2 locally.
+#
+# Differences from production (Fly):
+#   - No Litestream replication (LITESTREAM_BUCKET unset → entrypoint skips it).
+#   - Bind-mounted data dir for inspectability (so you can `sqlite3 ./data/caas.db`
+#     from your host).
+#   - Dev-only placeholder secrets. NEVER use these in production.
 #
 # Usage:
-#   1. Copy .env.example to .env and fill in real values.
-#   2. docker compose up -d
-#
-# To rotate BADGE_HMAC_SECRET:
-#   See docs/SECRET_ROTATION.md for the full procedure.
-#
-# Two notes worth knowing:
-#   - The `data:` volume holds the SQLite DB. Don't `docker compose down -v`
-#     in production unless you mean to wipe the database.
-#   - The container respects SIGTERM for graceful shutdown (the recompute
-#     scheduler unrefs its timer; in-flight HTTP requests complete).
-
-version: "3.8"
+#   docker compose up --build       # build image and start
+#   docker compose down             # stop and remove containers
+#   docker compose down -v          # ...and wipe the data volume
 
 services:
-  caas-api:
+  caas-lite:
     build:
       context: .
       dockerfile: Dockerfile
-    image: caas-lite:latest
-    container_name: caas-api
+    container_name: caas-lite-dev
+    ports:
+      # Maps host 8080 → container 8080. If you have something else on
+      # 8080 locally (another dev stack, etc.), change the left side.
+      - "8080:8080"
+    environment:
+      # Match the production env shape so the local container exercises
+      # the same code paths. PORT is also set in the Dockerfile but
+      # listing it here makes the contract visible.
+      NODE_ENV: production
+      PORT:     "8080"
+
+      # Dev-only secrets. The app's boot-time check (auth.ts) throws if
+      # JWT_*_SECRET are unset, so we must provide *something*. These
+      # values are intentionally weak placeholders — production uses
+      # `fly secrets set` with real high-entropy values.
+      JWT_ACCESS_SECRET:  "dev-jwt-access-secret-change-me-min-32-chars"
+      JWT_REFRESH_SECRET: "dev-jwt-refresh-secret-change-me-min-32-chars"
+
+      # LITESTREAM_BUCKET deliberately unset → docker-entrypoint.sh
+      # detects this and runs without replication. Local dev does not
+      # need backups.
+
+    volumes:
+      # Bind-mount ./data so SQLite files survive container restarts AND
+      # are inspectable from the host. The directory is created on first
+      # `up` if missing.
+      - ./data:/data
+
+    # Restart policy: unless-stopped means "restart on crash, but not
+    # after a deliberate `docker compose down`." Good local-dev default;
+    # production restart policy is owned by Fly.
     restart: unless-stopped
 
-    # All secrets and config flow via env files. Never inline secrets in
-    # this file — it gets committed to git.
-    env_file:
-      - .env
-
-    # SQLite DB persists in this volume across container restarts.
-    volumes:
-      - caas-data:/data
-      - caas-receipts:/app/data/receipts
-
-    ports:
-      - "${PORT:-3000}:3000"
-
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz", "||", "exit", "1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-    # Modest resource caps. Adjust to your actual load.
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-        reservations:
-          memory: 128M
-
-    # Read-only root FS where possible. The DB volume is writable; the
-    # rest of the container shouldn't need writes during normal operation.
-    read_only: false  # set true once you've verified nothing writes outside volumes
-    tmpfs:
-      - /tmp
-
-    # Don't run as root. Adjust UID/GID to match your host user if you
-    # need to manage the data volume by hand from outside the container.
-    user: "1000:1000"
-
-volumes:
-  caas-data:
-    driver: local
-  caas-receipts:
-    driver: local
+    # The Dockerfile already declares HEALTHCHECK — compose honors it,
+    # so `docker compose ps` shows healthy/unhealthy. Listing healthcheck
+    # here would override it; we deliberately don't.

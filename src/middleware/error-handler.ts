@@ -28,7 +28,7 @@
  * cookie, password, token, dev_hmac_secret, *_secret, *_key.
  */
 
-import type { Request, Response, NextFunction, Express } from "express";
+import type { Request, Response, NextFunction, Application } from "express";
 import { AppError, isAppError } from "../lib/errors";
 import { childLogger } from "../lib/pino";
 
@@ -43,7 +43,7 @@ interface ErrorResponseBody {
   cause?:     unknown;      // only when exposeInternals === true
 }
 
-function shouldExposeInternals(app: Express): boolean {
+function shouldExposeInternals(app: Application): boolean {
   if (process.env.NODE_ENV === "production") return false;
   // app.locals.exposeErrors defaults to true; only an explicit `false` hides.
   return app.locals.exposeErrors !== false;

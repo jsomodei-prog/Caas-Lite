@@ -74,6 +74,12 @@ import {
 // regulatory_consent_purposes tables and managed via /api/v1/regulatory.
 import { createRegulatoryIngestRouter } from "./routes/regulatoryIngest";
 
+// Type-only import: notifications.ts is dynamically imported at handler time
+// (see /admin/notify/test below) to keep cold-start light, but the union types
+// are needed at compile time. Type-only imports erase at compile time so
+// they don't change the runtime module graph.
+import type { IncidentType, IncidentSeverity } from "./services/notifications";
+
 // ─── Environment Validation ───────────────────────────────────────────────────
 
 interface RequiredEnv {
@@ -521,7 +527,11 @@ export function createApp(): AppContext {
   // FX rates
   apiV1.get("/fx/rates/:currency", validate({ params: FxRateParams }), async (req, res) => {
     const { getRate, getRateHistory } = await import("./services/fx");
-    const currency = req.params.currency;
+    // req.params.currency is typed string | string[] by Express 5 (to support
+    // /foo/:bar+ repeatable params). The validate() middleware above has
+    // already enforced FxRateParams which treats it as a single string, so
+    // the cast reflects runtime reality. See src/middleware/validate.ts.
+    const currency = req.params.currency as string;
     const rate     = await getRate(db, currency);
     fxRateGauge.set({ currency: rate.target, provider: rate.provider }, rate.mid_rate);
     res.json({ current: rate, recent: getRateHistory(db, currency, 10) });
@@ -561,12 +571,15 @@ export function createApp(): AppContext {
   });
 
   apiV1.post("/admin/queue/retry/:jobId", validate({ params: QueueJobParams }), (req, res) => {
-    const retried = queue.retryDead(req.params.jobId);
-    res.json({ retried, job_id: req.params.jobId });
+    // See FX handler above for cast rationale (Express 5 req.params typing).
+    const jobId   = req.params.jobId as string;
+    const retried = queue.retryDead(jobId);
+    res.json({ retried, job_id: jobId });
   });
 
   apiV1.get("/admin/queue/job/:jobId", validate({ params: QueueJobParams }), (req, res) => {
-    const job = queue.getJob(req.params.jobId);
+    const jobId = req.params.jobId as string;
+    const job   = queue.getJob(jobId);
     if (!job) throw AppError.notFound("Job not found");
     res.json(job);
   });
@@ -660,9 +673,17 @@ export function createApp(): AppContext {
   apiV1.post("/admin/notify/test", validate({ body: NotifyTestBody }), async (req, res) => {
     const { notifyIncident } = await import("./services/notifications");
     const tenantId = (req.headers["x-tenant-id"] as string) ?? "test-tenant";
+    // type / severity unions are sourced from notifications.ts (the producer).
+    // The previous inline literals included values ("anomaly_low",
+    // "anomaly_medium", "low", "medium") that are NOT in IncidentType /
+    // IncidentSeverity. notifyIncident did SEVERITY_ORDER[unknown] >= min,
+    // which returned false, silently dropping the notification — making the
+    // test endpoint appear to succeed while doing nothing. NotifyTestBody
+    // (Zod schema) is the runtime gate; this type assertion is just the
+    // compile-time match. Audit NotifyTestBody if you change these unions.
     const b = req.body as {
-      type?:        "anomaly_low" | "anomaly_medium" | "anomaly_high" | "anomaly_critical";
-      severity?:    "low" | "medium" | "high" | "critical";
+      type?:        IncidentType;
+      severity?:    IncidentSeverity;
       title?:       string;
       description?: string;
       metadata?:    Record<string, unknown>;

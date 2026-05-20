@@ -14,3 +14,23 @@ data/*.db
 node_modules/
 dist/
 tmp/
+
+fly-secrets.tmp
+
+
+jwt-fix.tmp
+
+
+payout-fix.tmp
+
+
+payout-fix.tmp
+
+
+# Local deploy diagnostics
+fly-deploy.log
+fly-launch.log
+fly-volume.log
+fly-logs*.log
+tsc-test.log
+

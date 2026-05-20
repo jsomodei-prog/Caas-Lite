@@ -1,0 +1,87 @@
+# .dockerignore
+#
+# Everything matched here is excluded from the Docker build context.
+# Two reasons it matters:
+#   1. Speed: smaller context = faster `docker build` upload step.
+#   2. Safety: anything in the context can end up in the image if a
+#      future Dockerfile edit `COPY .`s something it shouldn't.
+#
+# Allow-list discipline: when in doubt, EXCLUDE. The Dockerfile copies
+# package.json, tsconfig.json, and src/ explicitly — nothing else needs
+# to be reachable from build steps.
+
+# Dependency directories — rebuilt fresh in the builder stage via npm ci.
+node_modules
+**/node_modules
+
+# Build output — produced by the builder stage, never copied in.
+dist
+build
+
+# Local databases and Litestream artifacts. Critical: if these landed in
+# the image, every container would start with a stale copy of someone's
+# dev DB. The runtime stage creates /data fresh and Litestream restores
+# from S3.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+data/
+/data/
+
+# Secrets. These must come from `fly secrets set`, never from the image.
+# A leaked .env in a layer is a credential rotation event.
+.env
+.env.*
+*.pem
+*.key
+
+# Version control + CI metadata. Not useful inside the container; the
+# .git directory in particular can be megabytes of object history.
+.git
+.gitignore
+.github
+.gitlab-ci.yml
+
+# Test infrastructure. tsconfig.json's `exclude` already keeps tests out
+# of dist/, but they shouldn't be in the build context at all either.
+tests
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+coverage
+.nyc_output
+
+# Editor / IDE local files.
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Documentation — exclude by default, add specific .md files back only
+# if the runtime genuinely needs them. README is for humans, not containers.
+*.md
+docs/
+
+# Local-only Docker artifacts. The Dockerfile reads from `deploy/` for
+# its own config (litestream.yml, docker-entrypoint.sh), and those COPY
+# instructions are explicit — but a stray docker-compose.override.yml or
+# .dockerignore variant should never end up in an image.
+docker-compose*.yml
+.dockerignore
+Dockerfile.*
+
+# Logs and tmp files that local dev might produce.
+*.log
+logs/
+tmp/
+.tmp/
+
+# Misc local tooling. None of these belong in a production image.
+.npmrc.local
+.nvmrc
+.node-version

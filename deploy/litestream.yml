@@ -1,0 +1,72 @@
+# litestream.yml
+#
+# Litestream continuous replication config for the SQLite database.
+# Lives at /etc/litestream.yml inside the container; the entrypoint
+# script passes this path explicitly via `-config`.
+#
+# What Litestream does:
+#   - Reads the SQLite WAL (write-ahead log) as the app writes to it.
+#   - Streams WAL frames to S3 (or S3-compatible: R2, B2, MinIO) every
+#     few seconds.
+#   - Periodically takes full snapshots so restore time stays bounded.
+#   - On boot, can replay WAL frames + the latest snapshot to reconstruct
+#     the DB on a fresh machine.
+#
+# What Litestream does NOT do:
+#   - Replicate between live instances. It's NOT multi-master. If you
+#     ever need horizontal scale, the architecture has to change (e.g.
+#     migrate to Postgres, or front with a read-replica layer like
+#     LiteFS). Litestream is for backup + restore, not for HA.
+#   - Verify backups. You should periodically test restore (see
+#     DEPLOYMENT.md § Disaster recovery).
+#
+# Reference: https://litestream.io/reference/config/
+
+# ─── DB to replicate ──────────────────────────────────────────────────────────
+dbs:
+  - path: /data/caas.db
+
+    # ─── Replication targets ────────────────────────────────────────────────
+    #
+    # One DB can have multiple replicas (e.g. S3 + a second region). For
+    # CaaS-Lite we ship with one S3-compatible destination by default.
+    # Add a second `- type: s3` block if you want cross-provider redundancy.
+    #
+    # All `${VAR}` placeholders are interpolated from the container's
+    # environment, which on Fly comes from `fly secrets set ...`.
+    replicas:
+      - type:               s3
+        bucket:             ${LITESTREAM_BUCKET}
+        path:               caas-lite
+        region:             ${LITESTREAM_REGION}
+        access-key-id:      ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key:  ${LITESTREAM_SECRET_ACCESS_KEY}
+
+        # ─── Snapshot & retention tuning ─────────────────────────────────
+        #
+        # snapshot-interval:   how often a full snapshot is taken. Smaller
+        #                      = faster restore but more S3 PUTs. 24h is a
+        #                      reasonable default for a moderate-write app.
+        # retention:           how long old snapshots are kept. 168h = 7
+        #                      days, enough to recover from "we made a bad
+        #                      change three days ago and only noticed now."
+        # retention-check-interval: how often Litestream prunes expired
+        #                      snapshots. Once per hour is fine; this is
+        #                      cheap.
+        # sync-interval:       how often the WAL is uploaded. 1s gives a
+        #                      worst-case RPO of ~1s for committed writes.
+        #                      Trading: lower = better RPO + more network
+        #                      chatter; higher = the opposite.
+        snapshot-interval:        24h
+        retention:                168h
+        retention-check-interval: 1h
+        sync-interval:            1s
+
+        # Endpoint:
+        #   - Cloudflare R2: https://<account>.r2.cloudflarestorage.com
+        #     Set LITESTREAM_ENDPOINT secret to your R2 URL. force-path-style
+        #     must be true for R2 (its virtual-hosted-style support is uneven).
+        #   - Backblaze B2: https://s3.<region>.backblazeb2.com
+        #   - AWS S3: leave endpoint unset, the AWS SDK figures it out.
+        endpoint:          ${LITESTREAM_ENDPOINT}
+        force-path-style:  true

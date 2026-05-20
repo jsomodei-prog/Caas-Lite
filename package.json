@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "dev:local": "set WEBHOOK_SECRET=dev-secret-change-me& set HEADER_API_KEY=dev-api-key-change-me& set ALERT_FORWARD_URL=https://webhook.site/6cdf12f2-f188-45dc-9b7f-a54f637585af& ts-node src/index.ts",
     "lint": "eslint \"src/**/*.ts\"",
