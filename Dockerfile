@@ -109,6 +109,13 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist          ./dist
 COPY --from=builder --chown=node:node /app/package.json  ./package.json
 
+# Static HTML for /dashboard and /register routes. Lives at the repo root
+# (not under src/), so it's copied from the build context, not the builder
+# stage. app.ts uses path.resolve("public/index.html") — that resolves
+# against Node's cwd, which is /app at runtime, so files must land at
+# /app/public/*.
+COPY --chown=node:node public ./public
+
 # Litestream config + entrypoint. The entrypoint orchestrates:
 #   1. litestream restore (idempotent: pulls latest snapshot if local DB missing)
 #   2. exec litestream replicate -exec "node dist/index.js"
@@ -142,10 +149,15 @@ EXPOSE 8080
 #   - `docker ps` shows healthy/unhealthy locally.
 #   - Any non-Fly platform that respects HEALTHCHECK works out of the box.
 #
+# Hits /readyz (not /healthz) for the same reason fly.toml does: Docker's
+# HEALTHCHECK feeds restart policies, which is closer to load-balancer
+# rotation semantics than to k8s liveness. See fly.toml [[http_service.checks]]
+# for the full rationale and src/app.ts for the endpoint contracts.
+#
 # Failure mode: wget exits non-zero, container marked unhealthy, `docker
 # compose` restart policy (if any) kicks in.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD wget --quiet --tries=1 --spider "http://localhost:${PORT}/healthz" || exit 1
+    CMD wget --quiet --tries=1 --spider "http://localhost:${PORT}/readyz" || exit 1
 
 # tini as PID 1 ensures clean signal forwarding to the entrypoint, which
 # in turn manages litestream and the Node process. The `-g` flag tells
