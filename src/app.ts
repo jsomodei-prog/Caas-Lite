@@ -79,6 +79,10 @@ import { createRegulatoryIngestRouter } from "./routes/regulatoryIngest";
 // are needed at compile time. Type-only imports erase at compile time so
 // they don't change the runtime module graph.
 import type { IncidentType, IncidentSeverity } from "./services/notifications";
+// CSP connect-src origins. Env-var driven so deployment can point at production
+// hostnames without code changes; localhost defaults keep local dev frictionless.
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
+const API_ORIGIN      = process.env.API_ORIGIN      ?? "http://localhost:3000";
 
 // ─── Environment Validation ───────────────────────────────────────────────────
 
@@ -427,7 +431,7 @@ export function createApp(): AppContext {
         defaultSrc:    ["'self'"],
         scriptSrc:     ["'self'", "'unsafe-inline'"],
         scriptSrcAttr: ["'unsafe-inline'"],
-        connectSrc:    ["'self'", "http://127.0.0.1:3000", "http://localhost:3000"],
+        connectSrc:    ["'self'", FRONTEND_ORIGIN, API_ORIGIN],
         objectSrc:     ["'none'"],
         upgradeInsecureRequests: [],
       },
