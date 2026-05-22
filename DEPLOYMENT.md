@@ -6,6 +6,61 @@
 
 ---
 
+## Production state of record
+
+This section describes the current live deployment. Update it whenever the underlying facts change.
+
+### Domain and DNS
+
+- Apex domain: `aitwcloud.com`
+- Registrar: Cloudflare (auto-renew ON)
+- Registrant email: `jsomodei@gmail.com`
+- DNS provider: Cloudflare
+- API subdomain: `api.aitwcloud.com` → Fly app `caas-lite`
+  - `A` record: `66.241.124.99`
+  - `AAAA` record: `2a09:8280:1::118:c812:0`
+  - Proxy status: **grey cloud (DNS only)** — not proxied
+  - TLS: Let's Encrypt cert issued by Fly, ~2 months until renewal at time of writing
+- Frontend subdomain: `app.aitwcloud.com` — **not yet set up** (see Open decisions)
+- Frontend currently served at: `https://caas-lite.fly.dev/dashboard`
+
+### Fly application
+
+- App name: `caas-lite`
+- Region: as configured in `fly.toml`
+- Process: single web process, serves both API and static frontend from one Node container
+- Health check: `/readyz` (added in commit `92ab0e5`)
+
+### Backups
+
+- Backup tool: Litestream
+- Destination: Cloudflare R2 bucket `caas-lite-backups`
+- Sync interval: 1s (continuous)
+- Verified replicating at last check
+
+### Bootstrap production user
+
+The first Executive was created by direct DB insert (see § Bootstrap the first user). Recorded here for reference:
+
+- Username: `aitw-ops`
+- Tenant: `tenant-aitw-001`
+- Role: `Executive`
+- Permission level: `client_super_admin`
+- UUID: `f77db9d1-3ef9-47c4-bd01-895e4bc3899e`
+- Created at: `2026-05-21T14:50:22.585Z`
+- Password: stored in Bitwarden (vault entry `aitw-ops production`)
+- Password hash: stored in Bitwarden Notes on the same entry
+
+### Code state at last deploy
+
+- Branch: `master`
+- HEAD: `d1d81b7` (URL change)
+- Preceded by `92ab0e5` (Dockerfile static-file COPY + `/readyz`)
+- Preceded by `ce6cd18` (CSP env-var refactor)
+- All pushed to `origin`
+
+---
+
 ## TL;DR — first-ever deploy
 
 ```bash
@@ -76,6 +131,14 @@ All secrets MUST be set via `fly secrets set`. They arrive in the container as e
 | `LITESTREAM_ACCESS_KEY_ID` | IAM credentials. The user/role needs only `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `s3:DeleteObject` on the bucket. Tighter scope than full S3 access. |
 | `LITESTREAM_SECRET_ACCESS_KEY` | matching secret |
 
+### Required for frontend hosting and CORS (added in slice-7 deploy)
+
+| Secret | Notes |
+|---|---|
+| `FRONTEND_ORIGIN` | Origin the frontend is served from; used in CSP and link generation. Currently `https://api.aitwcloud.com` (until app subdomain exists). |
+| `API_ORIGIN` | Canonical API origin; used in CSP `connect-src` and CORS allow logic. Currently `https://api.aitwcloud.com`. |
+| `CORS_ORIGINS` | Comma-separated list of origins allowed for CORS. Currently `https://api.aitwcloud.com,https://caas-lite.fly.dev`. |
+
 ### Application-level secrets (likely required, depending on which routes you use)
 
 Search the source for `process.env.` to enumerate. As of slice 7, the routes that read env include the badge HMAC secret (`badge-secrets.ts`), the commercial engine HMAC (`commercialEngine.ts:loadHmacSecret`), and the rate-limiting config. Set whatever those need.
@@ -87,6 +150,149 @@ fly secrets set JWT_ACCESS_SECRET="$(openssl rand -hex 32)"
 ```
 
 This triggers a deploy. The new secret takes effect when the new machine becomes healthy. **JWT secret rotation invalidates all existing access tokens** — clients re-auth. Plan rotations during low-traffic windows or accept the auth-storm.
+
+### Verifying what is actually set
+
+```bash
+fly secrets list -a caas-lite
+```
+
+Shows names and digests, not values. Compare against the tables above; missing entries are the most common cause of a machine that boots but immediately exits.
+
+### Local secrets hygiene
+
+Several files get created on the operator's laptop during bootstrap and secret rotation. None of them belong in git, and none of them belong on disk after the operation is done:
+
+- `insert_user.sql` — contains the bcrypt hash used to bootstrap the first user
+- `pw.txt` — plaintext password scratch file
+- `hash.js` — bcrypt hashing helper script
+- `hash.txt` / `userid.txt` — intermediate outputs from the bootstrap recipe
+- `genids.js` — UUID generation helper
+
+PowerShell cleanup at end of session:
+
+```powershell
+Remove-Item insert_user.sql, pw.txt, hash.js, hash.txt, userid.txt, genids.js -ErrorAction SilentlyContinue
+Test-Path insert_user.sql, pw.txt, hash.js, hash.txt, userid.txt, genids.js
+```
+
+All `Test-Path` results must be `False`.
+
+---
+
+## Custom-domain setup
+
+This section records how `api.aitwcloud.com` was wired up, so it can be repeated for `app.aitwcloud.com` or any other subdomain.
+
+### Prerequisites
+
+- Domain registered at Cloudflare with DNS hosted there.
+- Fly app deployed and reachable at its `*.fly.dev` hostname.
+- `flyctl` authenticated.
+
+### Steps
+
+1. Tell Fly about the hostname so it can request a cert:
+
+   ```bash
+   fly certs add api.aitwcloud.com -a caas-lite
+   fly certs show api.aitwcloud.com -a caas-lite
+   ```
+
+   The `show` output prints the exact `A`, `AAAA`, and (optionally) `_acme-challenge` records Fly needs.
+
+2. In Cloudflare DNS, add the records Fly printed:
+   - `A` record: name `api`, value = Fly IPv4, **Proxy status: DNS only (grey cloud)**.
+   - `AAAA` record: name `api`, value = Fly IPv6, **Proxy status: DNS only (grey cloud)**.
+   - If Fly asks for an `_acme-challenge` CNAME, add it as well.
+
+3. Wait for DNS propagation, then re-run `fly certs show`. The cert status should move to `Ready`.
+
+4. Update Fly secrets that reference the origin (`FRONTEND_ORIGIN`, `API_ORIGIN`, `CORS_ORIGINS`) and redeploy.
+
+5. Smoke test:
+
+   ```bash
+   curl -v https://api.aitwcloud.com/readyz
+   ```
+
+### Notes on proxied (orange-cloud) mode
+
+We are currently running grey-cloud. Switching to orange-cloud would add Cloudflare's CDN, WAF, and DDoS protections in front of Fly, but introduces a second TLS hop and changes the IP the app sees for clients. This decision is deferred (see Open decisions).
+
+---
+
+## Bootstrap the first user
+
+There is no UI for creating the first Executive. The procedure is intentional but undocumented elsewhere. Use this exact sequence.
+
+### What you will need
+
+- `flyctl` authenticated.
+- A throwaway working directory on your laptop.
+- Node.js locally for hashing.
+- Bitwarden (or equivalent) open to record the password and hash.
+
+### Generate the password and hash locally
+
+```powershell
+# 1. Pick a strong password and put it in pw.txt (gitignored / will be deleted)
+#    Use a password manager to generate it.
+
+# 2. Hash it with bcrypt
+node -e "console.log(require('bcryptjs').hashSync(require('fs').readFileSync('pw.txt','utf8').trim(), 12))" > hash.txt
+
+# 3. Generate the user UUID
+node -e "console.log(require('crypto').randomUUID())" > userid.txt
+```
+
+Store the password and the bcrypt hash in Bitwarden **now**, before continuing. Hash goes in the Notes field of the same vault entry.
+
+### SSH into the running app and insert
+
+```bash
+fly ssh console -a caas-lite
+```
+
+Inside the container:
+
+```sh
+cd /data                                  # or wherever the SQLite DB lives
+sqlite3 caas.db
+```
+
+Then in `sqlite3` (adjust table/column names to match the actual schema if they have drifted):
+
+```sql
+INSERT INTO users (
+  id, username, tenant_id, role, permission_level,
+  password_hash, created_at, is_active
+) VALUES (
+  '<paste UUID from userid.txt>',
+  'aitw-ops',
+  'tenant-aitw-001',
+  'Executive',
+  'client_super_admin',
+  '<paste bcrypt hash here>',
+  strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+  1
+);
+.quit
+```
+
+Exit the container.
+
+### Verify
+
+From your laptop:
+
+1. Browse to the frontend.
+2. Log in with `aitw-ops` and the password from Bitwarden.
+3. Confirm Executive-level UI is visible.
+
+### Clean up immediately
+
+On your laptop, delete every artifact that touched the password or hash. See the cleanup commands in § Secrets → Local secrets hygiene. All `Test-Path` results must be `False` before the session ends.
 
 ---
 
@@ -180,7 +386,51 @@ The Litestream config and secrets work with any S3-compatible service. Realistic
 | **Backblaze B2** | Cheapest by a wide margin for storage; predictable pricing. | Latency higher than S3/R2. | Set `LITESTREAM_ENDPOINT=https://s3.<region>.backblazeb2.com`. |
 | **MinIO (self-hosted)** | Full control; useful for air-gapped deployments. | You're now operating an S3, which is a real job. | Set `LITESTREAM_ENDPOINT=https://...` and possibly `force-path-style: true`. |
 
-For CaaS-Lite's likely write volume (moderate), **R2 is the cheapest no-surprises choice**. Egress matters because restores download the snapshot.
+For CaaS-Lite's likely write volume (moderate), **R2 is the cheapest no-surprises choice**. Egress matters because restores download the snapshot. The current deployment uses R2 (bucket `caas-lite-backups`).
+
+---
+
+## Windows operational notes
+
+The dev and ops laptop is Windows + PowerShell. These notes capture what bit us during deployment.
+
+### Line endings
+
+`git` on Windows defaults to converting `LF`↔`CRLF`. The Docker image is Linux. Shell scripts copied into the image must be `LF` only. Set:
+
+```powershell
+git config --global core.autocrlf input
+```
+
+and ensure any `.sh` files have a `.gitattributes` entry:
+
+```
+*.sh text eol=lf
+```
+
+### Quoting in PowerShell
+
+PowerShell does not pass single-quoted strings to subprocesses the way bash does. When invoking `fly secrets set` with values that contain commas or special characters, prefer double quotes and escape inner quotes:
+
+```powershell
+fly secrets set CORS_ORIGINS="https://api.aitwcloud.com,https://caas-lite.fly.dev" -a caas-lite
+```
+
+### `curl` on Windows
+
+`curl` in PowerShell is an alias for `Invoke-WebRequest`, which behaves differently from real curl. For diagnostic work, use `curl.exe` explicitly:
+
+```powershell
+curl.exe -v https://api.aitwcloud.com/readyz
+```
+
+### `Remove-Item` quirks
+
+`Remove-Item` errors loudly if a file does not exist. When cleaning up potentially-absent secrets files, always pass `-ErrorAction SilentlyContinue` and follow with `Test-Path` to confirm.
+
+### SQLite client locally
+
+`sqlite3.exe` is not on `PATH` by default on Windows. For local DB inspection, either install it explicitly or use `fly ssh console` and run `sqlite3` inside the container, which is what we do for production.
 
 ---
 
@@ -188,14 +438,35 @@ For CaaS-Lite's likely write volume (moderate), **R2 is the cheapest no-surprise
 
 Honest scope-limiting list — things that need separate work before this is truly "production":
 
+- **User & Tenant Management (required module, not yet built).** This is the largest application-level gap. Specifically:
+  - Bootstrap (first Executive) requires direct DB access — no UI for it, by design.
+  - Subsequent user creation by an Executive requires the API endpoint directly; no admin UI exists for user CRUD.
+  - Self-registration via `/register` works but has unclear security posture (see Open decisions).
+  - No tenant management UI. Tenants are implicit strings (e.g. `tenant-aitw-001`) with no governance, no provisioning flow, no rename, no archive.
+  - No user listing, editing, deactivation, role-change, or password-reset UI.
+  - Audit log of user actions is captured in the DB but there is no UI to read it.
 - **Observability:** the app has `prom-client` in dependencies, implying a Prometheus endpoint exists somewhere. This deployment doesn't configure scraping. Set up Grafana Cloud or Better Stack or similar; expose the metrics endpoint to whatever you choose.
 - **Log aggregation:** Fly captures stdout/stderr and serves them via `fly logs`. For structured search across a deploy history, ship them to Logtail / Datadog / etc. — Fly has built-in log shippers.
 - **Alerting:** healthcheck failures show in `fly logs` but don't page anyone. Set up an external monitor (UptimeRobot, Better Stack) hitting `/healthz` and paging your on-call.
-- **CDN / caching:** Fly's edge handles TLS but doesn't cache. If you start serving public-ish endpoints (like the badge route from slice 7), front with Cloudflare or similar.
+- **CDN / caching:** Fly's edge handles TLS but doesn't cache. If you start serving public-ish endpoints (like the badge route from slice 7), front with Cloudflare or similar. (Related: orange-cloud decision in Open decisions.)
 - **Rate limiting beyond what's in-app:** `express-rate-limit` runs in-process. For DDoS protection, you need a layer in front (Cloudflare WAF, Fly's own DDoS protection at the edge).
 - **Staging environment:** the setup above creates one app. For staging, repeat with `--name caas-lite-staging` and a separate bucket. The configs are identical, the secrets aren't.
+- **Restore drill:** we have backups, we have never restored from them in anger. The procedure in § Disaster recovery is documented but unrehearsed.
 
 These are real production concerns. They're each their own ticket — this deployment is the foundation, not the ceiling.
+
+---
+
+## Open decisions (deferred)
+
+Recorded here so they are not forgotten. None of these block current operation.
+
+1. **`app.aitwcloud.com` frontend subdomain.** Deferred. Today the frontend is served from the same Fly app as the API at `caas-lite.fly.dev/dashboard`. Splitting it requires either a second Fly app or a routing rule, plus CSP and CORS updates.
+2. **Cloudflare proxy mode (orange cloud) for `api.aitwcloud.com`.** Currently grey cloud. Switching gains CDN/WAF/DDoS; costs a TLS hop and client-IP indirection. Needs a small spike to validate Fly + Cloudflare proxied compatibility with the auth flow.
+3. **Self-registration security posture.** `/register` currently works but the threat model has not been agreed. Options range from disabling it entirely, to invite-token only, to email-verified open registration scoped by tenant. Needs an explicit design conversation before any public launch.
+4. **FX provider configuration.** Which provider, on what plan, configured when. Untouched.
+5. **Slice 7 hardening tracker.** 21 open items remain, untouched in this session. User & Tenant Management is being added to that tracker as the 22nd.
+6. **Business registration documents.** Need updating with the trademark-check lessons from the recent naming exercise.
 
 ---
 
