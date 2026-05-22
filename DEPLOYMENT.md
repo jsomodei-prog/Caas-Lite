@@ -51,6 +51,16 @@ The first Executive was created by direct DB insert (see § Bootstrap the first 
 - Password: stored in Bitwarden (vault entry `aitw-ops production`)
 - Password hash: stored in Bitwarden Notes on the same entry
 
+> **Note (2026-05-22):** the original bootstrap INSERT used column names
+> (`permission_level`, `is_active`) that do not appear in the live `users`
+> table schema as it exists today. Either the schema migrated after this
+> initial insert ran, or the column names were never correct in this
+> document. The § Bootstrap the first user section below has been corrected;
+> this historical block is left as-is for audit purposes. The value
+> `client_super_admin` was historically attached to `permission_level`; under
+> the current schema it should map to `plane_role` (verify against
+> `.schema users` before use).
+
 ### Code state at last deploy
 
 - Branch: `master`
@@ -248,7 +258,7 @@ node -e "console.log(require('crypto').randomUUID())" > userid.txt
 
 Store the password and the bcrypt hash in Bitwarden **now**, before continuing. Hash goes in the Notes field of the same vault entry.
 
-### SSH into the running app and insert
+### SSH into the running app and verify the schema
 
 ```bash
 fly ssh console -a caas-lite
@@ -261,24 +271,52 @@ cd /data                                  # or wherever the SQLite DB lives
 sqlite3 caas.db
 ```
 
-Then in `sqlite3` (adjust table/column names to match the actual schema if they have drifted):
+**Before pasting any INSERT, run this in the sqlite prompt:**
+
+```sql
+.schema users
+```
+
+Read the output. Confirm the column list against the INSERT below. The recipe assumes the `users` table has at minimum these columns: `id`, `username`, `email`, `tenant_id`, `role`, `control_plane`, `plane_role`, `password_hash`, `created_at`, `updated_at`. If the live schema diverges (extra `NOT NULL` columns, different names, or a column with a CHECK constraint we don't satisfy), the INSERT will fail. Adjust the INSERT to match the live schema; do not loosen the schema to match this recipe.
+
+### Insert the user
+
+In the same `sqlite3` session:
 
 ```sql
 INSERT INTO users (
-  id, username, tenant_id, role, permission_level,
-  password_hash, created_at, is_active
+  id,
+  username,
+  email,
+  tenant_id,
+  role,
+  control_plane,
+  plane_role,
+  password_hash,
+  created_at,
+  updated_at
 ) VALUES (
   '<paste UUID from userid.txt>',
   'aitw-ops',
+  'ops@aitwcloud.com',                    -- substitute the real operator email
   'tenant-aitw-001',
-  'Executive',
-  'client_super_admin',
+  'Executive',                            -- must be one of: Executive, Auditor, Partner
+  'business',                             -- control_plane: business or client (see CHECK constraint)
+  'client_super_admin',                   -- plane_role: must satisfy the CHECK on plane_role
   '<paste bcrypt hash here>',
   strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-  1
+  strftime('%Y-%m-%dT%H:%M:%fZ','now')
 );
 .quit
 ```
+
+**Column notes:**
+
+- `email`: required (NOT NULL). Must be RFC-valid format if downstream code re-validates it.
+- `role`: enforced by `RegisterBody` schema in `src/routes/auth.ts` as one of `Executive`, `Auditor`, `Partner`. The DB column may or may not have the matching CHECK constraint — check `.schema users` output.
+- `control_plane` and `plane_role`: governed by CHECK constraints in the migrations. Wrong values cause `CHECK constraint failed`. If the INSERT fails on either, run `.schema users` again and read the exact constraint to find the allowed values.
+- `password_hash`: must be the bcrypt output from `hash.txt`, not the literal password. A common bootstrap failure is pasting the plaintext password by mistake — login then fails because the stored value isn't a valid bcrypt hash.
+- `created_at` / `updated_at`: ISO 8601 with milliseconds.
 
 Exit the container.
 
@@ -289,6 +327,14 @@ From your laptop:
 1. Browse to the frontend.
 2. Log in with `aitw-ops` and the password from Bitwarden.
 3. Confirm Executive-level UI is visible.
+
+If login fails with "Invalid credentials" — most common cause is that the `password_hash` column contains the literal password string instead of the bcrypt hash. Re-run step 2 of the hash generation, regenerate the hash, then:
+
+```sql
+UPDATE users SET password_hash = '<new bcrypt hash>' WHERE username = 'aitw-ops';
+```
+
+If login fails with a different error (500, schema mismatch, missing field) — the auth handler is reading columns that the bootstrap INSERT didn't populate. Check `fly logs`, identify the missing column, and add it to the INSERT.
 
 ### Clean up immediately
 
