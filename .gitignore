@@ -34,3 +34,6 @@ fly-volume.log
 fly-logs*.log
 tsc-test.log
 
+
+# uploaded archives
+*.zip
