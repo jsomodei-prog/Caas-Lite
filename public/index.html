@@ -755,15 +755,15 @@
 
     <div class="field-group">
       <label>Username</label>
-      <input type="text" id="login-username" value="exec_demo" placeholder="exec_demo">
+      <input type="text" id="login-username" value="" placeholder="exec_demo">
     </div>
     <div class="field-group">
       <label>Password</label>
-      <input type="password" id="login-password" value="ExecPass123!" placeholder="••••••••••••">
+      <input type="password" id="login-password" value="" placeholder="••••••••••••">
     </div>
     <div class="field-group">
       <label>Tenant ID</label>
-      <input type="text" id="login-tenant" value="tenant-demo-001">
+      <input type="text" id="login-tenant" value="" placeholder="your-tenant-id">
     </div>
     <div class="field-group">
       <label>Server URL</label>
@@ -772,7 +772,6 @@
 
     <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In</button>
     <div class="login-error" id="login-error"></div>
-    <div class="login-hint">Demo: exec_demo / ExecPass123!</div>
   </div>
 </div>
 
@@ -983,7 +982,7 @@
     <span style="color:var(--border-hi);margin:0 8px">·</span>
     <span id="plane-role-label" style="opacity:0.7">client_partner</span>
     <span style="color:var(--border-hi);margin:0 8px">·</span>
-    <span id="plane-tenant-label" style="opacity:0.5">tenant-demo-001</span>
+    <span id="plane-tenant-label" style="opacity:0.5">—</span>
   </div>
 
   <!-- ── Security page (Business plane only) ──────────────────────────────── -->
@@ -1239,7 +1238,6 @@
         <div class="page-subtitle">User onboarding · freelancer registry · KYC tiers · role management</div>
       </div>
       <div style="display:flex;gap:12px">
-        <a href="/register" target="_blank" class="btn-refresh" style="text-decoration:none;display:flex;align-items:center;gap:6px">+ New User</a>
         <button class="btn-refresh" onclick="openWizard()" style="background:rgba(0,212,170,0.1);border-color:rgba(0,212,170,0.3);color:var(--accent)">⚡ Register Freelancer</button>
         <button class="btn-refresh" onclick="loadUsers()">↺ Refresh</button>
       </div>

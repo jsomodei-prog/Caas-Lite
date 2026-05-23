@@ -162,6 +162,21 @@ const HARD_LOCKOUT_HOURS = 24;
 /** Sliding window for failed-auth-burst anomaly detection. */
 const BURST_WINDOW_MINUTES = 10;
 
+/**
+ * Public-registration kill switch. Default: DISABLED.
+ *
+ * The /register route currently has no authorization check — any caller can
+ * create a user with any role, including Executive. Until that posture is
+ * decided and an admin-only user-creation flow exists, the route is gated
+ * to return 404 unless ENABLE_PUBLIC_REGISTRATION is explicitly set to "true".
+ *
+ * The corresponding GET /register page route in src/app.ts is gated on the
+ * same env var. Both must be enabled together for the registration flow to
+ * function; disabling either alone leaves a half-broken UX.
+ */
+const PUBLIC_REGISTRATION_ENABLED =
+  process.env.ENABLE_PUBLIC_REGISTRATION === "true";
+
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
 /**
@@ -740,7 +755,20 @@ export function createAuthRouter(): Router {
   // get 401, not 400. This mirrors the ordering in provisioning.ts where
   // requireBusinessPlane runs before validate for the same reason: don't
   // leak schema details to unauthorized callers.
-  router.post("/register", validate({ body: RegisterBody }), asyncHandler(register));
+  // /register is gated on PUBLIC_REGISTRATION_ENABLED (see constant block).
+  // The gate runs BEFORE validate so a disabled route returns 404 without
+  // leaking the schema, matching the comment above about not leaking schema
+  // details to unauthorized callers. next("route") skips remaining handlers
+  // on this route, letting the request bubble to the app-level 404 funnel.
+  router.post(
+    "/register",
+    (_req, _res, next) => {
+      if (!PUBLIC_REGISTRATION_ENABLED) return next("route");
+      next();
+    },
+    validate({ body: RegisterBody }),
+    asyncHandler(register)
+  );
   router.post("/login",    validate({ body: LoginBody }),    asyncHandler(login));
   router.post("/refresh",  validate({ body: RefreshBody }),  asyncHandler(refresh));
   router.post("/logout", requireAccessToken, (req, res) =>

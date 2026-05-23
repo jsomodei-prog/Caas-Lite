@@ -715,7 +715,14 @@ export function createApp(): AppContext {
     res.sendFile(require("path").resolve("public/index.html"));
   });
 
-  app.get("/register", (_req, res) => {
+  app.get("/register", (_req, res, next) => {
+    // Gated on ENABLE_PUBLIC_REGISTRATION (default: disabled). When disabled,
+    // fall through to the Step 13 catch-all so the response shape matches
+    // any other 404 (error/code/request_id). See the /register POST gate in
+    // src/routes/auth.ts — both must be set together.
+    if (process.env.ENABLE_PUBLIC_REGISTRATION !== "true") {
+      return next(AppError.notFound("Not Found"));
+    }
     res.sendFile(require("path").resolve("public/register.html"));
   });
 
