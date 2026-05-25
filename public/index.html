@@ -767,7 +767,7 @@
     </div>
     <div class="field-group">
       <label>Server URL</label>
-      <input type="text" id="login-server" value="https://api.aitwcloud.com">
+      <input type="text" id="login-server" value="" placeholder="leave blank to use this server">
     </div>
 
     <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In</button>
@@ -1358,7 +1358,7 @@
 const state = {
   token: null,
   tenant: 'tenant-demo-001',
-  server: 'https://api.aitwcloud.com',
+  server: window.location.origin,
   user: null,
   currentPage: 'overview'
 };
@@ -1387,7 +1387,7 @@ async function doLogin() {
   btn.textContent = 'Signing in…';
   err.style.display = 'none';
 
-  state.server = document.getElementById('login-server').value.trim().replace(/\/$/, '');
+  state.server = document.getElementById('login-server').value.trim().replace(/\/$/, '') || window.location.origin;
   state.tenant = document.getElementById('login-tenant').value.trim();
 
   try {
