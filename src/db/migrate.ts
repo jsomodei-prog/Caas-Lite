@@ -27,6 +27,7 @@ import type { Database as DB } from "better-sqlite3";
 import path from "path";
 import { PHASE15_MIGRATIONS } from "./migrations/phase15_commercial_activation";
 import { PHASE11_USERS_AUDIT_MIGRATIONS } from "./migrations/phase11_users_audit";
+import { PHASE16_CAAS_GOVERNANCE_MIGRATIONS } from "./migrations/phase16_caas_governance";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -966,6 +967,13 @@ const MIGRATIONS: Migration[] = [
   // Both CREATE statements are IF NOT EXISTS — safe against existing DBs
   // that were previously seeded by the inline DDL on first user-router boot.
   ...PHASE11_USERS_AUDIT_MIGRATIONS,
+
+  // ── 029–032 ── Phase 16: CaaS Governance Core ──────────────────────────────
+  // Compliance pipeline tables: scan_events, verification_results, vault_records,
+  // compliance_alerts, json_policy_maps, job_queue, partners, commissions,
+  // trust_badge_cache, audit_log. Also extends accounts + users with new columns
+  // and seeds starter EU AI Act / GDPR policy rules.
+  ...PHASE16_CAAS_GOVERNANCE_MIGRATIONS,
 
 ];
 
