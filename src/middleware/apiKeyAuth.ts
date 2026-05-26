@@ -79,6 +79,8 @@ interface AccountsKeyRow {
 declare global {
   namespace Express {
     interface Request {
+      /** Tenant ID — set by either JWT auth or API key auth. */
+      caasTenantId?: string;
       /** "jwt" | "api_key" — set by auth middleware, used for audit logging. */
       caasAuthMethod?: "jwt" | "api_key";
       /** Tier from the accounts row — set by API key auth. */
