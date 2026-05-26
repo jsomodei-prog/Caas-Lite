@@ -1,0 +1,58 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - master
+      - staging
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Node setup ──────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # ── 3. Install dependencies ────────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 4. Run tests (if any exist) ────────────────────────────────────────
+      # Fail fast: do not attempt deploy if tests fail.
+      - name: Run tests
+        run: npm test
+        continue-on-error: false
+
+      # ── 5. TypeScript build ────────────────────────────────────────────────
+      # Fail fast: do not attempt deploy if the build fails.
+      - name: Build
+        run: npm run build
+
+      # ── 6. Install Fly CLI ─────────────────────────────────────────────────
+      - name: Set up Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # ── 7. Deploy to production (master branch only) ───────────────────────
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/master'
+        run: flyctl deploy --remote-only -a caas-lite
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # ── 8. Deploy to staging (staging branch only) ────────────────────────
+      - name: Deploy to staging
+        if: github.ref == 'refs/heads/staging'
+        run: flyctl deploy --remote-only -a caas-lite-staging
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

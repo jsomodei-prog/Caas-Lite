@@ -458,6 +458,14 @@ export function createApp(): AppContext {
   // Resolves and attaches the plane principal to every authenticated request.
   app.use(injectPlaneContext());
 
+  // ── Step 8c: Root redirect ───────────────────────────────────────────────
+  // Must sit BEFORE the rate limiter (Step 9) so that GET / is handled
+  // cleanly without requiring an X-CaaS-Tier header. Without this, the root
+  // path hits the rate limiter first and returns a confusing 400/429 JSON
+  // response instead of directing the browser to the dashboard.
+  // Fixed in Session 0. See DEPLOYMENT-update-2026-05-25.md bug #2.
+  app.get("/", (_req, res) => res.redirect(301, "/dashboard"));
+
   // ── Step 9: Rate limiter ──────────────────────────────────────────────────
   app.use(createRateLimiter({
     tierHeader:       "X-CaaS-Tier",

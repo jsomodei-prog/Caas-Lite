@@ -52,6 +52,13 @@ export interface RateLimitResult {
   /** Seconds the client should wait before retrying (only set when !allowed). */
   retryAfterSeconds: number | null;
   bucketKey: string;
+  /**
+   * True when the request was rejected because the tier header was absent or
+   * unrecognised — NOT because a rate limit was exceeded. The middleware uses
+   * this flag to return HTTP 400 (bad request) instead of HTTP 429 (too many
+   * requests), which is the semantically correct status for a missing header.
+   */
+  invalidTier?: boolean;
 }
 
 export interface RateLimiterOptions {
@@ -314,6 +321,12 @@ function evaluateRateLimit(
   const tier = resolveTier(req, opts.tierHeader, opts.allowUnknownTier);
 
   if (!tier) {
+    // The tier header is absent or unrecognised and allowUnknownTier is false.
+    // Return invalidTier: true so the middleware emits HTTP 400 (bad request)
+    // rather than HTTP 429 (too many requests). A missing header is a client
+    // configuration error — not a rate-limit event. The previous limit: 0
+    // response was indistinguishable from a genuine 429 and caused ops
+    // confusion. Fixed in Session 0. See DEPLOYMENT-update-2026-05-25.md.
     return {
       allowed: false,
       tier: "PAY_AS_YOU_GO",
@@ -322,6 +335,7 @@ function evaluateRateLimit(
       resetEpoch: Math.floor(Date.now() / 1000),
       retryAfterSeconds: null,
       bucketKey: "invalid",
+      invalidTier: true,
     };
   }
 
@@ -405,6 +419,18 @@ export function createRateLimiter(
       const tenantId =
         (req.headers[opts.tenantHeader.toLowerCase()] as string | undefined) ??
         "unknown";
+
+      // Bug fix (Session 0): distinguish a missing/invalid tier header from a
+      // genuine rate-limit event. Previously both produced HTTP 429 with
+      // limit: 0, which was semantically wrong and confused clients and ops.
+      if (result.invalidTier) {
+        res.status(400).json({
+          error: "Tier header required or invalid",
+          hint: `Send X-CaaS-Tier: LITE | GROWTH | ENTERPRISE on every authenticated request.`,
+          path: req.path,
+        });
+        return;
+      }
 
       rateLimitCounter.inc({
         tier: result.tier,

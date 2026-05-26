@@ -980,7 +980,7 @@
     <div class="plane-dot"></div>
     <span id="plane-label">CLIENT PLANE</span>
     <span style="color:var(--border-hi);margin:0 8px">·</span>
-    <span id="plane-role-label" style="opacity:0.7">client_partner</span>
+    <span id="plane-role-label" style="opacity:0.7">—</span>
     <span style="color:var(--border-hi);margin:0 8px">·</span>
     <span id="plane-tenant-label" style="opacity:0.5">—</span>
   </div>
@@ -1357,7 +1357,7 @@
 // ── State ─────────────────────────────────────────────────────────────
 const state = {
   token: null,
-  tenant: 'tenant-demo-001',
+  tenant: '',
   server: window.location.origin,
   user: null,
   currentPage: 'overview'
@@ -1835,7 +1835,11 @@ function loadAll() {
 // ── Plane context ─────────────────────────────────────────────────────────
 function applyPlaneContext(user) {
   const plane     = user.control_plane  ?? 'client';
-  const planeRole = user.plane_role     ?? 'client_partner';
+  // Bug fix (Session 0): fall back through role fields in priority order.
+  // /auth/me may return the field as `plane_role`, `role`, or both.
+  // The literal 'client_partner' fallback was causing the ribbon to show
+  // the wrong label for executives and super-admins. Fixed in Session 0.
+  const planeRole = user.plane_role ?? user.role ?? '—';
   const tenantScope = user.plane_tenant_scope || user.tenant_id || state.tenant;
 
   const banner = document.getElementById('plane-banner');
